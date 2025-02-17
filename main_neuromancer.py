@@ -96,7 +96,14 @@ terminal_cost = Node(critic.mpc_mterm, ['X'], ['V'], name='terminal_cost')
 
 linear_dynamics = Node(concat_dynamics, ['X', 'U'], ['X'], name='linear_dynamics')
 policy = Node(critic.dpc, ['X'], ['U'], name='policy')
+
+'''
+mpc_settings['n_horizon']+1 redundant terminal cost evaluations
+1 redundant stage cost evaluations
+but objective matches that of do-mpc, horizon considered :)
+'''
 cl_system = System([policy, stage_cost, linear_dynamics, terminal_cost])
+cl_system.nsteps = critic.mpc_settings['n_horizon'] + 2
 
 # random states as training data
 train_data = DictDataset({'X': 3.*torch.randn(3333, 1, n)}, name='train')  # Split conditions into train and dev
@@ -112,7 +119,12 @@ x = variable('X')
 l = variable('l')
 V = variable('V')
 
-stage_loss = 1. * (l[:, :-1, :] == 0.)
+'''
+Ignore last stage cost (k=mpc_settings['n_horizon']+1), only consider last temrinal cost (k=mpc_settings['n_horizon']+2).
+Stage cost should be weighted (mpc_settings['n_horizon']+1) times more than terminal cost.
+This is because Neuromancer computes mean(stage costs) rather than mean(sum of stage_costs over horizon) for this formulation.
+'''
+stage_loss = (critic.mpc_settings['n_horizon']+1.) * (l[:, :-1, :] == 0.)
 terminal_loss = 1. * (V[:, [-1], :] == 0.)
 stage_loss.name = "stage_loss"
 terminal_loss.name = "terminal_loss"
@@ -136,5 +148,4 @@ trainer = Trainer(
 )
 
 # Train model with prediction horizon of 2
-cl_system.nsteps = 2
 best_model = trainer.train()
