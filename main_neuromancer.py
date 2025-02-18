@@ -131,7 +131,7 @@ terminal_loss.name = "terminal_loss"
 
 loss = PenaltyLoss([stage_loss, terminal_loss], [])
 problem = Problem([cl_system], loss)
-optimizer = torch.optim.AdamW(policy.parameters(), lr=0.001)
+optimizer = torch.optim.AdamW(policy.parameters(), lr=0.01)
 
 # learning
 trainer = Trainer(
@@ -140,12 +140,48 @@ trainer = Trainer(
     dev_loader,
     dev_loader,
     optimizer=optimizer,
-    epochs=400,
+    epochs=10,
     train_metric="train_loss",
     dev_metric="dev_loss",
     eval_metric='dev_loss',
-    warmup=400,
+    warmup=4,
 )
 
-# Train model with prediction horizon of 2
+# Train model with prediction horizon of 10
 best_model = trainer.train()
+K_opt = calc_K(A_mpc, B_mpc, Q, R).astype(np_kwargs['dtype'])
+print(f"Distance from optimal gain: {np.linalg.norm(K_opt - K, 'fro')}")
+
+# Evaluating loss function for random inputs
+loss_dict = {k: torch.randn(20, cl_system.nsteps, 1) for k in loss.input_keys}
+out_dict = loss(loss_dict)
+
+# Evaluating loss function for random initial states
+eval_data = DictDataset({"X" : 3.*torch.randn(3333, 1, n),
+                         "U"  : 3.*torch.randn(3333, 1, m),
+                         "R"  : 3.*torch.randn(3333, 1, 1),
+                         "X'" : 3.*torch.randn(3333, 1, n),}, name='train')
+eval_buffer = torch.utils.data.DataLoader(eval_data, batch_size=64,
+                                          collate_fn=train_data.collate_fn, shuffle=False)
+
+def get_subdict(dict, keys, rekey=False, val=None):
+    subdict = {key : dict[key] for key in keys}
+    if rekey and (val != None):
+        subdict["X"] = val
+    elif rekey:
+        subdict["X"] = subdict.pop("X'")
+    return subdict
+
+for batch in eval_buffer:
+    # go through and validate gradient tracking
+    q_x_next = problem(get_subdict(batch, ["X'", "name"], rekey=True))['train_loss']
+    q_pred = torch.mean(batch['R']) + q_x_next
+
+    cl_system.nsteps -= 1
+    z = torch.concat((batch['X'], batch['U']), dim=-1).squeeze(1)
+    q_l = torch.mean(critic.mpc_lterm(z))
+    x_pred = critic.mpc_model(z).unsqueeze(1)
+    q_x = problem(get_subdict(batch, ["X", "name"], rekey=True, val=x_pred))['train_loss']
+    cl_system.nsteps += 1
+
+    q_targ = q_l + q_x
