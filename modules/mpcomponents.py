@@ -83,8 +83,16 @@ class PDQuadraticStageCost(nn.Module):
         self.N = nn.Parameter(N)
         self.M = nn.Parameter(M)
         # N, M share memory with original numpy arrays
-        self.Q = self.N.T @ self.N + epsilon*torch.eye(self.n)
-        self.R = self.M.T @ self.M + epsilon*torch.eye(self.m)
+
+    @property
+    def Q(self):
+        """ Automatically recalculate Q every time self.N updates """
+        return self.N.T @ self.N + self.epsilon*torch.eye(self.n)
+    
+    @property
+    def R(self):
+        """ Automatically recalculate Q every time self.N updates """
+        return self.M.T @ self.M + self.epsilon*torch.eye(self.m)
 
     def forward(self, input):
         """ x^TQx + u^TRu """
@@ -101,11 +109,17 @@ class PDQuadraticTerminalCost(nn.Module):
         self.epsilon = epsilon
         # L shares memory with original numpy array
 
+    @property
+    def P(self):
+        """ Automatically recalculate P every time self.L updates """
+        return self.L.T @ self.L + self.epsilon*torch.eye(self.n)
+
     def forward(self, input):
         """ x^TPx """
         x = input
-        P = self.L.T @ self.L + self.epsilon*torch.eye(self.n)
-        return (x @ P * x).sum(axis=1, keepdims=True)
+        return (x @ self.P * x).sum(axis=1, keepdims=True)
+        # P = self.L.T @ self.L + self.epsilon*torch.eye(self.n)
+        # return (x @ P * x).sum(axis=1, keepdims=True)
 
 if __name__ == '__main__':
     import numpy as np
