@@ -102,4 +102,3 @@ if __name__ == '__main__':
 
     for key, value in res.items():
         print(f'{key}: {value}')
-
