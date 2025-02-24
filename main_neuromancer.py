@@ -11,7 +11,7 @@ import do_mpc
 from copy import copy
 
 from modules.templates import template_linear_model, template_linear_simulator
-from modules.mpcomponents import QuadraticStageCost, QuadraticTerminalCost, LinearDynamics, LinearPolicy
+from modules.mpcomponents import QuadraticStageCost, QuadraticTerminalCost, PDQuadraticTerminalCost, LinearDynamics, LinearPolicy
 from modules.mpcritic import MPCritic
 from modules.utils import calc_K, calc_P
 
@@ -19,7 +19,7 @@ from neuromancer.dataset import DictDataset
 from neuromancer.trainer import Trainer
 
 """ User settings: """
-mode = 'dpc' # 'dpc' or 'critic'
+mode = 'critic' # 'dpc' or 'critic'
 np_kwargs = {'dtype' : np.float32}
 kwargs = {'dtype' : torch.float32,
           'device' : 'cpu'}
@@ -62,13 +62,14 @@ P_opt = calc_P(A_mpc, B_mpc, Q, R).astype(np_kwargs['dtype'])
 if mode == 'dpc':
     K = np.random.uniform(-1., 1., (m,n)).astype(np_kwargs['dtype'])
     P = P_opt
+    mpc_mterm = QuadraticTerminalCost(n, P)
 elif mode == 'critic':
     K = K_opt
-    P = np.random.uniform(-1., 1., (n,n)).astype(np_kwargs['dtype'])
+    L = np.random.uniform(-1., 1., (n,n)).astype(np_kwargs['dtype'])
+    mpc_mterm = PDQuadraticTerminalCost(n, L)
 unc_p = {'A' : [A_mpc],
          'B' : [B_mpc]} # 1 uncertainty scenario considered
 mpc_lterm = QuadraticStageCost(n, m, Q, R)
-mpc_mterm = QuadraticTerminalCost(n, P)
 mpc_model = LinearDynamics(n, m, A_mpc, B_mpc)
 dpc = LinearPolicy(n, m, K)
 
@@ -78,8 +79,8 @@ critic.setup_mpc()
 critic.requires_grad_(True)
 
 """ Neuromancer stuff """
-batches = 3000
-b = 64
+batches = 5000
+b = 256
 problem = critic.setup_problem(mode)
 
 if mode == 'dpc':
@@ -137,14 +138,14 @@ if mode == 'dpc':
         if (i % 100) == 0:
             print(f"Iter {i}: 'Distance' from optimal gain: {np.linalg.norm(K_opt - K, 'fro')}")
 
-    print(K_opt - K)
+    print(f'K == K^*:\n{np.isclose(K_opt, K)}')
 
 elif mode == 'critic':
     """ Evaluating Q-function for random tuples, presumably coming from replay buffer """    
     # Optimizer and objective
     mse = torch.nn.MSELoss(reduction='mean')
     critic_params = list(critic.mpc_mterm.parameters()) # + list(stage_cost.parameters()) + list(linear_dynamics.parameters())
-    critic_optimizer = optim.Adam(critic_params, lr=0.1)
+    critic_optimizer = optim.Adam(critic_params, lr=0.01)
 
     # Training loop
     for i in range(batches):
@@ -165,6 +166,7 @@ elif mode == 'critic':
         critic_optimizer.step()
 
         if (i % 100) == 0:
+            P = L.T @ L + mpc_mterm.epsilon*np.diag(np.ones(n, **np_kwargs))
             print(f"Iter {i}: 'Distance' from optimal value function: {np.linalg.norm(P_opt - P, 'fro')}")
 
-    print(P_opt - P)
+    print(f'P == P^*:\n{np.isclose(P_opt, P)}')

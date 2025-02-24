@@ -72,7 +72,41 @@ class LinearPolicy(nn.Module):
         """ Kx """
         x = input
         return x @ self.K.T
+
+class PDQuadraticStageCost(nn.Module):
+    def __init__(self, n, m, Q=None, R=None, epsilon=0.001):
+        super().__init__()
+        N = torch.rand((n,n), **kwargs) if N is None else torch.from_numpy(N)
+        M = torch.rand((m,m), **kwargs) if M is None else torch.from_numpy(M)
+        self.n = n
+        self.m = m
+        self.N = nn.Parameter(N)
+        self.M = nn.Parameter(M)
+        # N, M share memory with original numpy arrays
+        self.Q = self.N.T @ self.N + epsilon*torch.eye(self.n)
+        self.R = self.M.T @ self.M + epsilon*torch.eye(self.m)
+
+    def forward(self, input):
+        """ x^TQx + u^TRu """
+        # L4CasADi models can only have 1 input, not (x,u)
+        x, u = input[..., :self.n], input[..., self.n:]
+        return (x @ self.Q * x).sum(axis=1, keepdims=True) + (u @ self.R * u).sum(axis=1, keepdims=True)
     
+class PDQuadraticTerminalCost(nn.Module):
+    def __init__(self, n, L=None, epsilon=0.001):
+        super().__init__()
+        L = torch.rand((n,n), **kwargs) if L is None else torch.from_numpy(L)
+        self.n = n
+        self.L = nn.Parameter(L)
+        self.epsilon = epsilon
+        # L shares memory with original numpy array
+
+    def forward(self, input):
+        """ x^TPx """
+        x = input
+        P = self.L.T @ self.L + self.epsilon*torch.eye(self.n)
+        return (x @ P * x).sum(axis=1, keepdims=True)
+
 if __name__ == '__main__':
     import numpy as np
 
