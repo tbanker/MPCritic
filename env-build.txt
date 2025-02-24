@@ -1,5 +1,5 @@
-conda create -n MPC-Critic python=3.10
-conda activate MPC-Critic
+conda create -n MPCritic python=3.10
+conda activate MPCritic
 conda install pytorch torchvision -c pytorch
 conda install scikit-build
 conda install ninja

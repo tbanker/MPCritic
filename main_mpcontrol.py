@@ -52,7 +52,7 @@ mpc_model = LinearDynamics(n, m, A_mpc, B_mpc)
 dpc = LinearPolicy(n, m, K)
 
 critic = MPCritic(model, mpc_model, mpc_lterm, mpc_mterm, dpc, unc_p)
-critic.template_mpc()
+critic.setup_mpc()
 
 """ Set initial state """
 np.random.seed(99)
