@@ -1,5 +1,6 @@
 import numpy as np
 from scipy.linalg import solve_discrete_are
+from neuromancer.dataset import DictDataset
 
 def calc_P(A, B, Q, R):
     """ Solve DARE """

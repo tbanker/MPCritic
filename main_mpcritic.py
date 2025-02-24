@@ -65,7 +65,7 @@ mpc_model = LinearDynamics(n, m, A_mpc, B_mpc)
 dpc = LinearPolicy(n, m, K)
 
 critic = MPCritic(model, mpc_model, mpc_lterm, mpc_mterm, dpc, unc_p)
-critic.template_mpc()
+critic.setup_mpc()
 critic.dpc.requires_grad_(True)
 critic.mpc_model.requires_grad_(True)
 
@@ -128,7 +128,7 @@ for t in range(T):
         B_err = np.linalg.norm(B_sim-B_mpc, ord='fro')
         print(f"A Err: {A_err}, B Err: {B_err}")
 
-        critic.online_update(x0) # turns requires_grad off
+        critic.online_mpc_update(x0) # turns requires_grad off
         critic.dpc.requires_grad_(True)
         critic.mpc_model.requires_grad_(True)
 
