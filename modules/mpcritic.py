@@ -28,10 +28,11 @@ class InputConcat(torch.nn.Module):
         return self.module(z)
 
 class MPCritic(nn.Module):
-    def __init__(self, model, mpc_model, mpc_lterm, mpc_mterm, dpc, unc_p=None, mpc_settings=None):
+    def __init__(self, model, dynamics, mpc_lterm, mpc_mterm, dpc, unc_p=None, mpc_settings=None):
         super().__init__()
         self.model = model
-        self.mpc_model = mpc_model
+        self.dynamics = dynamics
+        self.mpc_model = dynamics.dx.module # assumes dynamics.dx is InputConcat object
         self.mpc_lterm = mpc_lterm
         self.mpc_mterm = mpc_mterm
         self.dpc = dpc
@@ -150,8 +151,9 @@ class MPCritic(nn.Module):
         """ construct critic/DPC system nodes """
         if mode == 'dpc':
             # only used training the dpc with Neuromancer's Trainer class at the moment
-            concat_dynamics = InputConcat(self.mpc_model)
-            dynamics_model = Node(concat_dynamics, ['x', 'u'], ['x'], name='dynamics_model')
+            # concat_dynamics = InputConcat(self.mpc_model)
+            # dynamics_model = Node(concat_dynamics, ['x', 'u'], ['x'], name='dynamics_model')
+            dynamics_model = Node(self.dynamics.dx, ['x', 'u'], ['x'], name='dynamics_model')
             policy = Node(self.dpc, ['x'], ['u'], name='policy')
 
             concat_cost = InputConcat(self.mpc_lterm)
@@ -161,8 +163,9 @@ class MPCritic(nn.Module):
             node_list = [policy, dynamics_model, stage_cost, terminal_cost]
 
         elif mode == 'critic':
-            concat_dynamics = InputConcat(self.mpc_model)
-            dynamics_model = Node(concat_dynamics, ['x', 'u'], ['x_next'], name='dynamics_model')
+            # concat_dynamics = InputConcat(self.mpc_model)
+            # dynamics_model = Node(concat_dynamics, ['x', 'u'], ['x_next'], name='dynamics_model')
+            dynamics_model = Node(self.dynamics.dx, ['x', 'u'], ['x_next'], name='dynamics_model')
             policy = Node(self.dpc, ['x_next'], ['u'], name='policy')
             x_shift = Node(lambda x: x, ['x_next'], ['x'], name='x_shift')
 
@@ -198,19 +201,24 @@ class MPCritic(nn.Module):
 
 if __name__ == '__main__':
     import numpy as np
+    import gymnasium as gym
+    from gymnasium.spaces.box import Box
+    from stable_baselines3.common.buffers import ReplayBuffer
 
     from mpcomponents import QuadraticStageCost, QuadraticTerminalCost, LinearDynamics, LinearPolicy
-    from templates import template_linear_model
-
+    from dynamics import Dynamics
+    from templates import template_linear_model, LQREnv
     from utils import calc_K, calc_P
 
     np_kwargs = {'dtype' : np.float32}
 
-    b = 3
+    """ System information """
+
+    b = 1
     n = 2
     m = n
-    x = torch.ones((b,n), **kwargs) * torch.arange(b).view(b,1)
-    x[:,0] += 1.
+    # x = torch.ones((b,n), **kwargs) * torch.arange(b).view(b,1)
+    # x[:,0] += 1.
 
     model = template_linear_model(n, m)
     
@@ -220,16 +228,41 @@ if __name__ == '__main__':
     K = -0.5 * np.diag(np.ones(n, **np_kwargs))
     unc_p = {'A' : [A],
              'B' : [B]}
+    
+    """ RL preliminaries """
+    gym.register(
+        id="gymnasium_env/LQR-v0",
+        entry_point=LQREnv,
+    )
 
+    env_kwargs = {k:v for k,v in zip(["n", "m", "Q", "R", "A", "B"], [n, m, Q, R, A, B])}
+    env = gym.make_vec("gymnasium_env/LQR-v0", num_envs=b, **env_kwargs)
+
+    rb = ReplayBuffer(
+        buffer_size=100000,
+        observation_space=env.observation_space,
+        action_space=env.action_space,
+        device=kwargs['device'],
+        handle_timeout_termination=False,
+    )
+
+    """ Agent information """
     mpc_lterm = QuadraticStageCost(n, m, Q, R)
     mpc_mterm = QuadraticTerminalCost(n, Q)
     mpc_model = LinearDynamics(n, m, A, B)
     dpc = LinearPolicy(n, m, K)
 
-    critic = MPCritic(model, mpc_model, mpc_lterm, mpc_mterm, dpc, unc_p)
+    # test default behavior with state-action space NN model
+    concat_dynamics = InputConcat(mpc_model)
+    dynamics = Dynamics(env, rb, dx=concat_dynamics)
+
+    critic = MPCritic(model, dynamics, mpc_lterm, mpc_mterm, dpc, unc_p)
     critic.setup_problem(mode='critic')
 
     """ Different outputs for given action """
+    obs, _ = env.reset()
+    x = torch.from_numpy(obs)
+
     q_s = critic(s=x)
     u = torch.zeros((b,m), **kwargs) # dpc(x)
     q_sa = critic(s=x, a=u)
@@ -245,11 +278,12 @@ if __name__ == '__main__':
     P = calc_P(A, B, Q, R).astype(np_kwargs['dtype'])
     mpc_mterm = QuadraticTerminalCost(n, P)
     dpc = LinearPolicy(n, m, K)
-    critic = MPCritic(model, mpc_model, mpc_lterm, mpc_mterm, dpc, unc_p)
+    critic = MPCritic(model, dynamics, mpc_lterm, mpc_mterm, dpc, unc_p)
     critic.setup_problem(mode='critic')
 
     q_s = critic(s=x)
     q_sa = critic(s=x, a=dpc(x))
+    P = torch.from_numpy(P)
     V_s = -(x @ P * x).sum(axis=1, keepdims=True)
     print(f'Q^*(s) == Q^*(s,a=K^*(s))): {torch.allclose(q_s, q_sa)}')
     print(f'Q^*(s) == V^*(s)): {torch.allclose(q_s, V_s)}')
