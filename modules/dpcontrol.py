@@ -9,7 +9,7 @@ import torch.optim as optim
 from neuromancer.system import Node, System
 from neuromancer.modules import blocks
 from neuromancer.dynamics import integrators
-from neuromancer.constraint import variable
+from neuromancer.constraint import variable, Objective
 from neuromancer.problem import Problem
 from neuromancer.loss import PenaltyLoss
 from neuromancer.dataset import DictDataset
@@ -22,8 +22,19 @@ np_kwargs = {'dtype' : np.float32}
 kwargs = {'dtype' : torch.float32,
           'device' : 'cpu'}
 
-class Dynamics(nn.Module):
-    def __init__(self, env, rb, dx=None):
+class InputConcat(torch.nn.Module):
+    def __init__(self, module):
+        super().__init__()
+        self.module = module
+
+    def forward(self, x, u):
+        """ f(x,u) -> f(z) """
+        # L4CasADi models must have 1 input (z), but Neuromancer needs 2 (x,u)
+        z = torch.concat((x,u), dim=-1)
+        return self.module(z)
+
+class DPControl(nn.Module):
+    def __init__(self, env, rb, H, dynamics, l, V, mu=None):
         super().__init__()
 
         self.env = env
@@ -32,35 +43,43 @@ class Dynamics(nn.Module):
         # Configure network
         self.nx = np.array(env.single_observation_space.shape).prod()
         self.nu = np.array(env.single_action_space.shape).prod()
-        self.dx = dx if dx != None else blocks.ResMLP(self.nx + self.nu, self.nx, bias=True,
+        self.H = H # mpc horizon per do-mpc
+
+        self.mu = mu if mu != None else blocks.ResMLP(self.nx, self.nu, bias=True,
                                                       linear_map=torch.nn.Linear, nonlin=torch.nn.SiLU,
                                                       hsizes=[64 for h in range(2)])
-        self.system_node = Node(self.dx, ['x','u'],['xnext'])
-        self.x_shift = Node(lambda x: x, ['xnext'], ['x'])
-        self.model = System([self.system_node], nstep_key='u') # or nsteps=1
-        self.model_eval = System([self.system_node, self.x_shift], nstep_key='u')
+        self.dynamics = dynamics
+        self.l = InputConcat(l)
+        self.V = V
+
+        self.mu_node = Node(self.mu, ['x'], ['u'], name='mu')
+        self.dx_node = Node(self.dynamics.dx, ['x','u'],['x'])
+        self.l_node = Node(self.l, ['x','u'],['l'])
+        self.V_node = Node(self.V, ['x'],['V'])
+        self.model = System([self.mu_node, self.dx_node, self.l_node, self.V_node], nsteps=self.H + 2)
         self.model_kwargs = {'dtype' : list(self.model.parameters())[0].dtype,
                              'device' : list(self.model.parameters())[0].device,}
 
         # Formulate problem
-        self.xpred = variable('xnext')
-        self.xtrue = variable('xtrue')
-        self.loss = (self.xpred == self.xtrue)^2 # confusingly, this refers to a constraint, not a Boolean
-        self.obj = PenaltyLoss([self.loss], [])
+        self.lpred = variable('l')
+        self.Vpred = variable('V')
+        self.l_loss = Objective(var=(self.H+1.)*self.lpred[:, :-1, :], name='stage_loss')
+        self.V_loss = Objective(var=(self.Vpred[:, [-1], :]), name='terminal_loss')
+        self.obj = PenaltyLoss([self.l_loss, self.V_loss], [])
         self.problem = Problem([self.model], self.obj)
 
         # Setup optimizer
-        self.opt = optim.AdamW(self.model.parameters(), 0.001)
+        self.opt = optim.Adam(self.mu_node.parameters(), 0.001)
 
-    def forward(self,x,u):
-        return self.dx(x,u)
+    def forward(self,x):
+        return self.mu(x)
     
     def train(self):
         train_loader = self._train_loader()
         trainer = Trainer(self.problem, train_loader,
                           optimizer=self.opt,
                           epochs=1000, epoch_verbose=100,
-                          patience=40,
+                          patience=400,
                           train_metric='train_loss', eval_metric='train_loss') # can add a test loss, but the dataset is constantly being updated anyway
         self.best_model = trainer.train() # output is a deepcopy
         return
@@ -71,31 +90,11 @@ class Dynamics(nn.Module):
         batch = self.rb.sample(1000)
         data = {}
         data['x'] = batch.observations.unsqueeze(1).to(**self.model_kwargs)
-        data['u'] = batch.actions.unsqueeze(1).to(**self.model_kwargs)
-        data['xtrue'] = batch.next_observations.unsqueeze(1).to(**self.model_kwargs)
+        # data = {**data, **self.mu_node(data)}
         datadict = DictDataset(data)
 
         train_loader = DataLoader(datadict, batch_size=64, shuffle=True, collate_fn=datadict.collate_fn)
         return train_loader
-    
-    def rollout_eval(self):
-
-        ## Add current run logger for wanbd
-
-        obs, info = self.env.reset()
-        signal = signals.prbs(10, self.nu, min=self.env.action_space.low, max=self.env.action_space.high, p=.9, rng=np.random.default_rng())/2
-        trajectory = self.model_eval({'x': torch.Tensor(obs).unsqueeze(1).to(**self.model_kwargs),
-                                      'u':torch.Tensor(signal[None,:]).to(**self.model_kwargs)})   
-        
-        mae = 0.0
-        for u,x in zip(signal,trajectory['x'].squeeze().detach().numpy()):
-            error = obs.squeeze() - x
-            mae += np.abs(np.mean(error))
-            obs, rewards, terminations, truncations, infos = envs.step([u])
-            # print(s)
-
-        print(mae/len(signal))
-        return
 
 if __name__ == "__main__":
     import os
@@ -104,12 +103,15 @@ if __name__ == "__main__":
     from dataclasses import dataclass
     import tyro
 
+    import numpy as np
+    import gymnasium as gym
     from stable_baselines3.common.buffers import ReplayBuffer
 
-    from mpcritic import InputConcat
-    from mpcomponents import LinearDynamics
-    from templates import LQREnv
-    
+    from mpcomponents import QuadraticStageCost, QuadraticTerminalCost, LinearDynamics, LinearPolicy
+    from dynamics import Dynamics
+    from templates import template_linear_model, LQREnv
+    from utils import calc_K, calc_P
+
     """ CleanRL setup """
     gym.register(
         id="gymnasium_env/LQR-v0",
@@ -192,9 +194,36 @@ if __name__ == "__main__":
         args.buffer_size,
         envs.single_observation_space,
         envs.single_action_space,
-        kwargs['device'],
+        device=kwargs['device'],
         handle_timeout_termination=False,
     )
+
+    """ User settings: """
+    learn_dynamics = False
+
+    """ System information """
+    b = 1
+    n = 2
+    m = n
+    A_env, B_env = np.diag(np.ones(n, **np_kwargs)), np.diag(np.ones(m, **np_kwargs)),
+    
+    Q, R = np.diag(np.ones(n, **np_kwargs)), np.diag(np.ones(m, **np_kwargs))
+    A = np.random.uniform(-1., 1., (n,n)).astype(np_kwargs['dtype']) if learn_dynamics else A_env
+    B = np.random.uniform(-1., 1., (n,m)).astype(np_kwargs['dtype']) if learn_dynamics else B_env
+    K = np.random.uniform(-1., 1., (m,n)).astype(np_kwargs['dtype'])
+    P = calc_P(A, B, Q, R).astype(np_kwargs['dtype'])
+    
+    """ DPControl information """
+    mpc_horizon = 1
+    l = QuadraticStageCost(n, m, Q, R)
+    V = QuadraticTerminalCost(n, P)
+    f = LinearDynamics(n, m, A, B)
+    mu = LinearPolicy(n, m, K)
+
+    concat_f = InputConcat(f)
+    dynamics = Dynamics(envs, rb, dx=concat_f)
+
+    dpcontrol = DPControl(envs, rb, mpc_horizon, dynamics, l, V, mu)
 
     """ Fill replay buffer """
     obs, _ = envs.reset(seed=args.seed)
@@ -210,29 +239,20 @@ if __name__ == "__main__":
 
         obs = next_obs
 
-    """ Dynamics setup """
-    b, n, m = envs.num_envs, envs.single_observation_space.shape[0], envs.single_action_space.shape[0]
+    """ Learning environment dynamics """
+    if learn_dynamics:
+        p_true = np.concat([A_env, B_env], axis=1)
+        p_init = np.concat([f.A.detach().numpy(), f.B.detach().numpy()], axis=1)
+        print(f"Before training: 'Distance' from true dynamics: {np.linalg.norm(p_true - p_init, 'fro')}")
+        dynamics.train()
+        p_learn = np.concat([f.A.detach().numpy(), f.B.detach().numpy()], axis=1)
+        print(f"After training: 'Distance' from true dynamics: {np.linalg.norm(p_true - p_learn, 'fro')}")
 
-    A = np.random.uniform(-1., 1., (n,n)).astype(np_kwargs['dtype'])
-    B = np.random.uniform(-1., 1., (n,m)).astype(np_kwargs['dtype'])
-    
-    l4c_model = LinearDynamics(n, m, A, B)
-    concat_dynamics = InputConcat(l4c_model)
-    dynamics = Dynamics(envs, rb, dx=concat_dynamics)
-
-    """ Model predictions """
-    action = envs.action_space.sample()
-    pred_dx = dynamics.dx(torch.from_numpy(obs).to(**kwargs), torch.from_numpy(action).to(**kwargs))
-    pred_dyn = dynamics(torch.from_numpy(obs).to(**kwargs), torch.from_numpy(action).to(**kwargs))
-    print(f"s'_dx == s'_dyn: {torch.allclose(pred_dx, pred_dyn)}")
-
-    """ Rollout eval """
-    dynamics.rollout_eval()
-
-    """ Training """
-    A_env, B_env = np.diag(np.ones(2, **np_kwargs)), np.diag(np.ones(2, **np_kwargs)),
-    A_init, B_init = A.copy(), B.copy()
-    dynamics.train()
-    A_train, B_train = l4c_model.A.detach().numpy(), l4c_model.B.detach().numpy()
-    print(f"A' != A: {not np.allclose(A_init, A_train)}; B' != B: {not np.allclose(B_init, B_train)}")
-    print(f"A' == A_env:\n{np.isclose(A_env, A_train)};\nB' == B_env:\n{np.isclose(A_env, A_train)}")
+    """ Learning ficticious controller """
+    K_opt = calc_K(A_env, B_env, Q, R)
+    K_init = K
+    print(f"Before training: 'Distance' from optimal gain: {np.linalg.norm(K_opt - K_init, 'fro')}")
+    dpcontrol.train()
+    K_learn = mu.K.detach().numpy()
+    print(f"After training: 'Distance' from true dynamics: {np.linalg.norm(K_opt - K_learn, 'fro')}")
+    print(f"K' == K^*:\n{np.isclose(K_opt, K_learn)}")
