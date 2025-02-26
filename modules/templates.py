@@ -96,7 +96,7 @@ class LQREnv(gym.Env):
         return self._state
     
     def _get_info(self):
-        return {}
+        return {'final_observation' : self._state}
     
     def reset(self, seed: Optional[int] = None, options: Optional[dict] = None):
         # We need the following line to seed self.np_random
@@ -114,7 +114,7 @@ class LQREnv(gym.Env):
         self._state = self.A @ self._state.T + self.B @ action.T
 
         # An environment is completed if and only if the agent has reached the target
-        terminated = np.array_equal(self._state, np.zeros(n, dtype=np.float32))
+        terminated = np.array_equal(self._state, np.zeros(self.n, dtype=np.float32))
         truncated = False
         reward = -(self._state @ self.Q @ self._state.T + action @ self.R @ action.T)
         observation = self._get_obs()

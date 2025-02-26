@@ -10,16 +10,18 @@ sys.path.append(rel_do_mpc_path)
 import do_mpc
 from copy import copy
 
-from modules.templates import template_linear_model, template_linear_simulator
+from modules.templates import template_linear_model, template_linear_simulator, LQREnv
 from modules.mpcomponents import QuadraticStageCost, QuadraticTerminalCost, PDQuadraticTerminalCost, LinearDynamics, LinearPolicy
-from modules.mpcritic import MPCritic
+from modules.mpcritic import MPCritic, InputConcat
+from modules.dynamics import Dynamics
 from modules.utils import calc_K, calc_P
 
 from neuromancer.dataset import DictDataset
 from neuromancer.trainer import Trainer
 
-""" User settings: """
-mode = 'critic' # 'dpc' or 'critic'
+import gymnasium as gym
+from stable_baselines3.common.buffers import ReplayBuffer
+
 np_kwargs = {'dtype' : np.float32}
 kwargs = {'dtype' : torch.float32,
           'device' : 'cpu'}
@@ -27,8 +29,12 @@ seed = 43
 np.random.seed(seed)
 torch.manual_seed(seed)
 
+""" User settings: """
+learn_dynamics = True
+mode = 'critic' # 'dpc' or 'critic'
+
 """ Get configured do-mpc modules: """
-b, n, m = 1, 4, 2
+num_envs, n, m = 1, 4, 2
 model = template_linear_model(n, m)
 
 """ Simulator stuff """
@@ -49,16 +55,35 @@ elif m == 2:
 sim_p = {'A' : A_sim,
          'B' : B_sim}
 
+Q_sim, R_sim = np.diag(np.ones(n, **np_kwargs)), np.diag(np.ones(m, **np_kwargs)) # np.ones((n,n)), np.ones((m,m))
+
 simulator = template_linear_simulator(model, sim_p)
 estimator = do_mpc.estimator.StateFeedback(model)
 
-""" MPC stuff """
+""" RL stuff """
+gym.register(
+    id="gymnasium_env/LQR-v0",
+    entry_point=LQREnv,
+)
+
+env_kwargs = {k:v for k,v in zip(["n", "m", "Q", "R", "A", "B"], [n, m, Q_sim, R_sim, A_sim, B_sim])}
+env = gym.make_vec("gymnasium_env/LQR-v0", num_envs=num_envs, max_episode_steps=10, **env_kwargs)
+
+rb = ReplayBuffer(
+    buffer_size=1000,
+    observation_space=env.observation_space,
+    action_space=env.action_space,
+    device=kwargs['device'],
+    handle_timeout_termination=False,
+)
+
+""" MPCritic stuff """
 # numpy arrays share memory with corresponding pytorch model params
-A_mpc = A_sim.copy() # + np.random.uniform(-0.4, 0.4, A_sim.shape).astype(np_kwargs['dtype'])
-B_mpc = B_sim.copy() # + np.random.uniform(-0.4, 0.4, B_sim.shape).astype(np_kwargs['dtype'])
-Q, R = np.diag(np.ones(n, **np_kwargs)), np.diag(np.ones(m, **np_kwargs)) # np.ones((n,n)), np.ones((m,m))
-K_opt = calc_K(A_mpc, B_mpc, Q, R).astype(np_kwargs['dtype'])
-P_opt = calc_P(A_mpc, B_mpc, Q, R).astype(np_kwargs['dtype'])
+A_mpc = np.random.uniform(-1., 1., (n,n)).astype(np_kwargs['dtype']) if learn_dynamics else A_sim.copy()
+B_mpc = np.random.uniform(-1., 1., (n,m)).astype(np_kwargs['dtype']) if learn_dynamics else B_sim.copy()
+Q_mpc, R_mpc = Q_sim.copy(), R_sim.copy()
+K_opt = calc_K(A_mpc, B_mpc, Q_mpc, R_mpc).astype(np_kwargs['dtype'])
+P_opt = calc_P(A_mpc, B_mpc, Q_mpc, R_mpc).astype(np_kwargs['dtype'])
 if mode == 'dpc':
     K = np.random.uniform(-1., 1., (m,n)).astype(np_kwargs['dtype'])
     P = P_opt
@@ -69,14 +94,45 @@ elif mode == 'critic':
     mpc_mterm = PDQuadraticTerminalCost(n, L)
 unc_p = {'A' : [A_mpc],
          'B' : [B_mpc]} # 1 uncertainty scenario considered
-mpc_lterm = QuadraticStageCost(n, m, Q, R)
+
+mpc_lterm = QuadraticStageCost(n, m, Q_mpc, R_mpc)
 mpc_model = LinearDynamics(n, m, A_mpc, B_mpc)
 dpc = LinearPolicy(n, m, K)
+concat_dynamics = InputConcat(mpc_model)
+dynamics = Dynamics(env=env, rb=rb, dx=concat_dynamics)
 
-critic = MPCritic(model, mpc_model, mpc_lterm, mpc_mterm, dpc, unc_p)
+critic = MPCritic(model, dynamics, mpc_lterm, mpc_mterm, dpc, unc_p)
 critic.mpc_settings['n_horizon'] = 1
 critic.setup_mpc()
 critic.requires_grad_(True)
+
+""" Learning environment dynamics """
+if learn_dynamics:
+    obs, _ = env.reset()
+    for _ in range(rb.buffer_size):
+        action = dpc(torch.from_numpy(obs)).detach().numpy()
+        next_obs, reward, terminated, truncated, info = env.step(action)
+
+        real_next_obs = next_obs.copy()
+        for idx, trunc in enumerate(truncated):
+            if trunc:
+                real_next_obs[idx] = info["final_observation"][idx]
+        rb.add(obs, real_next_obs, action, reward, terminated, info)
+
+        obs = next_obs
+
+    params_sim, params_mpc = np.concat([A_sim, B_sim], axis=1), np.concat([A_mpc, B_mpc], axis=1)
+    print(f"Before training: 'Distance' from true dynamics: {np.linalg.norm(params_sim - params_mpc, 'fro')}")
+    dynamics.train()
+    print(f"After training: 'Distance' from true dynamics: {np.linalg.norm(params_sim - params_mpc, 'fro')}")
+    A_lrn = list(dynamics.best_model.values())[0].detach().numpy()
+    B_lrn = list(dynamics.best_model.values())[1].detach().numpy()
+    params_lrn = np.concat([A_sim, B_sim], axis=1)
+    print(f"After training: 'Distance' from true dynamics: {np.linalg.norm(params_sim - params_lrn, 'fro')}")
+
+"""
+Because dynamics.best_model is a deepcopy, mpc_model, concat_dynamics, A_mpc, and B_mpc are not updated to reflect
+"""
 
 """ Neuromancer stuff """
 batches = 5000

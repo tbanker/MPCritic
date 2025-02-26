@@ -59,8 +59,8 @@ class Dynamics(nn.Module):
         train_loader = self._train_loader()
         trainer = Trainer(self.problem, train_loader,
                         optimizer=self.opt,
-                        epochs=1, epoch_verbose=4,
-                        patience=1,
+                        epochs=100, epoch_verbose=10,
+                        patience=40,
                         train_metric='train_loss', eval_metric='train_loss') # can add a test loss, but the dataset is constantly being updated anyway
         self.best_model = trainer.train() # output is a deepcopy
         return
@@ -70,9 +70,12 @@ class Dynamics(nn.Module):
         # need to coordinate the number of epoch and batch size
         batch = self.rb.sample(1000)
         data = {}
-        data['x'] = batch.observations.unsqueeze(1).to(**self.model_kwargs)
-        data['u'] = batch.actions.unsqueeze(1).to(**self.model_kwargs)
-        data['xtrue'] = batch.next_observations.unsqueeze(1).to(**self.model_kwargs)
+        if self.rb.n_envs == 1:
+            data['x'] = batch.observations.to(**self.model_kwargs) # batch.observations.unsqueeze(1).to(**self.model_kwargs)
+            data['u'] = batch.actions.unsqueeze(1).to(**self.model_kwargs)
+            data['xtrue'] = batch.next_observations.to(**self.model_kwargs)
+        else:
+            raise NotImplementedError("Not setup for vector environments with n_envs>1 yet")
         datadict = DictDataset(data)
 
         train_loader = DataLoader(datadict, batch_size=64, shuffle=True, collate_fn=datadict.collate_fn)
