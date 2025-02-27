@@ -29,9 +29,9 @@ class InputConcat(torch.nn.Module):
         return self.module(z)
 
 class MPCritic(nn.Module):
-    def __init__(self, model, dpcontrol, unc_p=None, mpc_settings=None):
+    def __init__(self, template_model, dpcontrol, unc_p=None, mpc_settings=None):
         super().__init__()
-        self.model = model
+        self.template_model = template_model
         self.dpcontrol = dpcontrol
 
         # Configure network
@@ -69,7 +69,7 @@ class MPCritic(nn.Module):
         self.l_l4c = l4c.L4CasADi(self.l_mpc, **self.l4c_kwargs)
         self.V_l4c = l4c.L4CasADi(self.V_mpc, **self.l4c_kwargs)
 
-        self.mpc_settings = {'n_horizon': 5,
+        self.mpc_settings = {'n_horizon': self.dpcontrol.H,
                              'n_robust': 0,
                              'open_loop': False,
                              't_step': 1.0,
@@ -126,13 +126,13 @@ class MPCritic(nn.Module):
     
     def setup_mpc(self):
         """ setup MPC problem """
-        mpc = do_mpc.controller.MPC(self.model)
+        mpc = do_mpc.controller.MPC(self.template_model)
         mpc.settings.__dict__.update(**self.mpc_settings)
         mpc.settings.supress_ipopt_output() # please be quiet
 
-        z = ca.transpose(ca.vertcat(self.model._x, self.model._u))
+        z = ca.transpose(ca.vertcat(self.template_model._x, self.template_model._u))
         lterm = self.l_l4c.forward(z)
-        x = ca.transpose(self.model._x)
+        x = ca.transpose(self.template_model._x)
         mterm = self.V_l4c.forward(x)
         # forward to 'build' l4c_model, required before L4CasADi.update()
         self.dx_l4c(z)
@@ -178,12 +178,13 @@ if __name__ == '__main__':
     from utils import calc_K, calc_P
 
     """ User settings: """
-    b = 3
+    n_envs = 3
 
     """ CleanRL setup """
     gym.register(
         id="gymnasium_env/LQR-v0",
         entry_point=LQREnv,
+        max_episode_steps=10
     )
 
     @dataclass
@@ -256,7 +257,7 @@ if __name__ == '__main__':
     torch.backends.cudnn.deterministic = args.torch_deterministic
 
     run_name = f"{args.env_id}__{args.exp_name}__{args.seed}__{int(time.time())}"
-    envs = gym.vector.SyncVectorEnv([make_env(args.env_id, args.seed, 0, args.capture_video, run_name) for _ in range(b)])
+    envs = gym.vector.SyncVectorEnv([make_env(args.env_id, args.seed, 0, args.capture_video, run_name) for _ in range(n_envs)])
 
     rb = ReplayBuffer(
         args.buffer_size,
@@ -267,22 +268,20 @@ if __name__ == '__main__':
     )
 
     """ System information """
-    n = 2
-    m = n
-    
-    Q, R = np.diag(np.ones(n, **np_kwargs)), np.diag(np.ones(m, **np_kwargs))
-    A = np.diag(np.ones(n, **np_kwargs))
-    B = np.diag(np.ones(m, **np_kwargs))
-    K = -0.5 * np.diag(np.ones(n, **np_kwargs))
-    P = calc_P(A, B, Q, R).astype(np_kwargs['dtype'])
-    unc_p = {'A' : [A],
-             'B' : [B]}
+    b, n, m = n_envs, envs.get_attr("n")[0], envs.get_attr("m")[0]
+    A_env, B_env = envs.get_attr("A")[0], envs.get_attr("B")[0]
+    Q, R = envs.get_attr("Q")[0], envs.get_attr("R")[0]
+
+    K = -0.5 * np.ones((m,n), **np_kwargs)
+    P = calc_P(A_env, B_env, Q, R).astype(np_kwargs['dtype'])
+    unc_p = {'A' : [A_env],
+             'B' : [A_env]}
 
     """ Agent information """
     mpc_horizon = 1
     l = QuadraticStageCost(n, m, Q, R)
     V = QuadraticTerminalCost(n, P)
-    f = LinearDynamics(n, m, A, B)
+    f = LinearDynamics(n, m, A_env, B_env)
     mu = LinearPolicy(n, m, K)
 
     concat_f = InputConcat(f)
@@ -308,7 +307,7 @@ if __name__ == '__main__':
     print(f'Q(s) == Q(s,a=\mu(s)): {torch.allclose(q_s, q_sa)}')
 
     """ Same outputs for optimal critic Q^* and value function V^* """
-    K = calc_K(A, B, Q, R).astype(np_kwargs['dtype'])
+    K = calc_K(A_env, B_env, Q, R).astype(np_kwargs['dtype'])
     mu = LinearPolicy(n, m, K)
     dpcontrol = DPControl(envs, rb, mpc_horizon, dynamics, l, V, mu)
     critic = MPCritic(model, dpcontrol, unc_p)

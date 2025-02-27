@@ -63,13 +63,21 @@ def template_linear_simulator(model, sim_p):
 
 class LQREnv(gym.Env):
     def __init__(self,
-            n=2,
+            n=4,
             m=2,
-            A=np.diag(np.ones(2, np.float32)),
-            B=np.diag(np.ones(2, np.float32)),
-            Q=np.diag(np.ones(2, np.float32)),
+            A=0.5 * np.array([[1., 0., 2., 0.],
+                              [0., 1., 0., 1.],
+                              [0., 0., 1., 2.],
+                              [1., 0., 0., 1.],], np.float32),
+            B=np.array([[0.5, 0],
+                        [0., 0],
+                        [0., 0],
+                        [0., 0.5]], np.float32),
+            Q=np.diag(np.ones(4, np.float32)),
             R=np.diag(np.ones(2, np.float32)),
+            max_timesteps=100
         ):
+        # super(LQREnv, self).__init__()
         
         assert (A.shape == (n,n)) and (B.shape == (n,m))
         assert (Q.shape == (n,n)) and (R.shape == (m,m))
@@ -80,6 +88,9 @@ class LQREnv(gym.Env):
         self.B = B
         self.Q = Q
         self.R = R
+
+        # self.max_timesteps = max_timesteps
+        # self.current_step = 0
 
         self._state = np.ones((n), dtype=np.int32)
 
@@ -101,6 +112,7 @@ class LQREnv(gym.Env):
     def reset(self, seed: Optional[int] = None, options: Optional[dict] = None):
         # We need the following line to seed self.np_random
         super().reset(seed=seed)
+        # self.current_step = 0
 
         # Choose the state uniformly at random
         self._state = self.np_random.uniform(low=-3, high=3, size=(self.n)).astype(np.float32)
@@ -111,11 +123,13 @@ class LQREnv(gym.Env):
         return observation, info
     
     def step(self, action):
+        # self.current_step += 1
+
         self._state = self.A @ self._state.T + self.B @ action.T
 
         # An environment is completed if and only if the agent has reached the target
-        terminated = np.array_equal(self._state, np.zeros(self.n, dtype=np.float32))
-        truncated = False
+        terminated = np.array_equal(self._state, np.zeros(self.n, dtype=np.float32)) or np.all(np.abs(self._state) > 20.)
+        truncated = False # True if self.current_step >= self.max_timesteps else False
         reward = -(self._state @ self.Q @ self._state.T + action @ self.R @ action.T)
         observation = self._get_obs()
         info = self._get_info()

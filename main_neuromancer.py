@@ -1,220 +1,228 @@
+import os
+import sys
+import random
+import time
 import numpy as np
 import torch
 from torch import optim
 from torch.utils.data import Dataset
 import matplotlib.pyplot as plt
-import sys
-import os
 rel_do_mpc_path = os.path.join('..','..')
 sys.path.append(rel_do_mpc_path)
 import do_mpc
 from copy import copy
 
+import gymnasium as gym
+from stable_baselines3.common.buffers import ReplayBuffer
+from dataclasses import dataclass
+import tyro
+
 from modules.templates import template_linear_model, template_linear_simulator, LQREnv
 from modules.mpcomponents import QuadraticStageCost, QuadraticTerminalCost, PDQuadraticTerminalCost, LinearDynamics, LinearPolicy
 from modules.mpcritic import MPCritic, InputConcat
 from modules.dynamics import Dynamics
-from modules.utils import calc_K, calc_P
+from modules.dpcontrol import DPControl
+from modules.utils import calc_K, calc_P, fill_rb
 
 from neuromancer.dataset import DictDataset
 from neuromancer.trainer import Trainer
 
-import gymnasium as gym
-from stable_baselines3.common.buffers import ReplayBuffer
-
 np_kwargs = {'dtype' : np.float32}
 kwargs = {'dtype' : torch.float32,
           'device' : 'cpu'}
-seed = 43
-np.random.seed(seed)
-torch.manual_seed(seed)
 
 """ User settings: """
-learn_dynamics = True
-mode = 'critic' # 'dpc' or 'critic'
+learn_dynamics = False
+learn_dpcontrol = False
 
-""" Get configured do-mpc modules: """
-num_envs, n, m = 1, 4, 2
-model = template_linear_model(n, m)
-
-""" Simulator stuff """
-A_sim = 0.5 * np.array([[1., 0., 2., 0.],
-                        [0., 1., 0., 1.],
-                        [0., 0., 1., 2.],
-                        [1., 0., 0., 1.],], **np_kwargs)
-if m == 1:
-    B_sim = np.array([[0.5],
-                    [0.],
-                    [0.],
-                    [0.]], **np_kwargs)
-elif m == 2:
-    B_sim = np.array([[0.5, 0],
-                    [0., 0],
-                    [0., 0],
-                    [0., 0.5]], **np_kwargs)
-sim_p = {'A' : A_sim,
-         'B' : B_sim}
-
-Q_sim, R_sim = np.diag(np.ones(n, **np_kwargs)), np.diag(np.ones(m, **np_kwargs)) # np.ones((n,n)), np.ones((m,m))
-
-simulator = template_linear_simulator(model, sim_p)
-estimator = do_mpc.estimator.StateFeedback(model)
-
-""" RL stuff """
+""" CleanRL setup """
 gym.register(
     id="gymnasium_env/LQR-v0",
     entry_point=LQREnv,
+    # max_episode_steps=10 # LQR environment doesn't handle this correctly
 )
 
-env_kwargs = {k:v for k,v in zip(["n", "m", "Q", "R", "A", "B"], [n, m, Q_sim, R_sim, A_sim, B_sim])}
-env = gym.make_vec("gymnasium_env/LQR-v0", num_envs=num_envs, max_episode_steps=10, **env_kwargs)
+@dataclass
+class Args:
+    exp_name: str = os.path.basename(__file__)[: -len(".py")]
+    """the name of this experiment"""
+    seed: int = 1
+    """seed of the experiment"""
+    torch_deterministic: bool = True
+    """if toggled, `torch.backends.cudnn.deterministic=False`"""
+    cuda: bool = True
+    """if toggled, cuda will be enabled by default"""
+    track: bool = False
+    """if toggled, this experiment will be tracked with Weights and Biases"""
+    wandb_project_name: str = "cleanRL"
+    """the wandb's project name"""
+    wandb_entity: str = None
+    """the entity (team) of wandb's project"""
+    capture_video: bool = False
+    """whether to capture videos of the agent performances (check out `videos` folder)"""
+    save_model: bool = False
+    """whether to save model into the `runs/{run_name}` folder"""
+    upload_model: bool = False
+    """whether to upload the saved model to huggingface"""
+    hf_entity: str = ""
+    """the user or org name of the model repository from the Hugging Face Hub"""
+
+    # Algorithm specific arguments
+    env_id: str = "gymnasium_env/LQR-v0" # "Hopper-v4"
+    """the environment id of the Atari game"""
+    total_timesteps: int = 10000
+    """total timesteps of the experiments"""
+    learning_rate: float = 3e-4
+    """the learning rate of the optimizer"""
+    buffer_size: int = int(1e3)
+    """the replay memory buffer size"""
+    gamma: float = 0.99
+    """the discount factor gamma"""
+    tau: float = 0.005
+    """target smoothing coefficient (default: 0.005)"""
+    batch_size: int = 64
+    """the batch size of sample from the reply memory"""
+    exploration_noise: float = 0.1
+    """the scale of exploration noise"""
+    learning_starts: int = 25e3
+    """timestep to start learning"""
+    policy_frequency: int = 2
+    """the frequency of training policy (delayed)"""
+    noise_clip: float = 0.5
+    """noise clip parameter of the Target Policy Smoothing Regularization"""
+
+def make_env(env_id, seed, idx, capture_video, run_name):
+    def thunk():
+        if capture_video and idx == 0:
+            env = gym.make(env_id, render_mode="rgb_array")
+            env = gym.wrappers.RecordVideo(env, f"videos/{run_name}")
+        else:
+            env = gym.make(env_id)
+        env = gym.wrappers.RecordEpisodeStatistics(env)
+        env.action_space.seed(seed)
+        return env
+
+    return thunk
+
+args = tyro.cli(Args)
+
+random.seed(args.seed)
+np.random.seed(args.seed)
+torch.manual_seed(args.seed)
+torch.backends.cudnn.deterministic = args.torch_deterministic
+
+n_envs = 1
+run_name = f"{args.env_id}__{args.exp_name}__{args.seed}__{int(time.time())}"
+envs = gym.vector.SyncVectorEnv([make_env(args.env_id, args.seed, 0, args.capture_video, run_name) for _ in range(n_envs)])
 
 rb = ReplayBuffer(
-    buffer_size=1000,
-    observation_space=env.observation_space,
-    action_space=env.action_space,
+    args.buffer_size,
+    envs.single_observation_space,
+    envs.single_action_space,
     device=kwargs['device'],
     handle_timeout_termination=False,
+    n_envs=n_envs
 )
+
+""" System information """
+n, m = envs.get_attr("n")[0], envs.get_attr("m")[0]
+A_env, B_env = envs.get_attr("A")[0], envs.get_attr("B")[0]
+Q, R = envs.get_attr("Q")[0], envs.get_attr("R")[0]
+
+K_opt = calc_K(A_env, B_env, Q, R).astype(np_kwargs['dtype'])
+P_opt = calc_P(A_env, B_env, Q, R).astype(np_kwargs['dtype'])
 
 """ MPCritic stuff """
 # numpy arrays share memory with corresponding pytorch model params
-A_mpc = np.random.uniform(-1., 1., (n,n)).astype(np_kwargs['dtype']) if learn_dynamics else A_sim.copy()
-B_mpc = np.random.uniform(-1., 1., (n,m)).astype(np_kwargs['dtype']) if learn_dynamics else B_sim.copy()
-Q_mpc, R_mpc = Q_sim.copy(), R_sim.copy()
-K_opt = calc_K(A_mpc, B_mpc, Q_mpc, R_mpc).astype(np_kwargs['dtype'])
-P_opt = calc_P(A_mpc, B_mpc, Q_mpc, R_mpc).astype(np_kwargs['dtype'])
-if mode == 'dpc':
+mpc_horizon = 1
+A_mpc = np.random.uniform(-1., 1., (n,n)).astype(np_kwargs['dtype']) if learn_dynamics else A_env.copy()
+B_mpc = np.random.uniform(-1., 1., (n,m)).astype(np_kwargs['dtype']) if learn_dynamics else B_env.copy()
+Q_mpc, R_mpc = Q.copy(), R.copy()
+
+if learn_dpcontrol:
     K = np.random.uniform(-1., 1., (m,n)).astype(np_kwargs['dtype'])
     P = P_opt
-    mpc_mterm = QuadraticTerminalCost(n, P)
-elif mode == 'critic':
+    V = QuadraticTerminalCost(n, P)
+else:
     K = K_opt
     L = np.random.uniform(-1., 1., (n,n)).astype(np_kwargs['dtype'])
-    mpc_mterm = PDQuadraticTerminalCost(n, L)
+    V = PDQuadraticTerminalCost(n, L)
+l = QuadraticStageCost(n, m, Q_mpc, R_mpc)
+f = LinearDynamics(n, m, A_mpc, B_mpc)
+mu = LinearPolicy(n, m, K)
+
+concat_f = InputConcat(f)
+dynamics = Dynamics(envs, rb, dx=concat_f)
+
+dpcontrol = DPControl(envs, rb, mpc_horizon, dynamics, l, V, mu)
+
+template_model = template_linear_model(n, m)
 unc_p = {'A' : [A_mpc],
          'B' : [B_mpc]} # 1 uncertainty scenario considered
-
-mpc_lterm = QuadraticStageCost(n, m, Q_mpc, R_mpc)
-mpc_model = LinearDynamics(n, m, A_mpc, B_mpc)
-dpc = LinearPolicy(n, m, K)
-concat_dynamics = InputConcat(mpc_model)
-dynamics = Dynamics(env=env, rb=rb, dx=concat_dynamics)
-
-critic = MPCritic(model, dynamics, mpc_lterm, mpc_mterm, dpc, unc_p)
-critic.mpc_settings['n_horizon'] = 1
+model = template_linear_model(n, m)
+critic = MPCritic(template_model, dpcontrol, unc_p)
 critic.setup_mpc()
 critic.requires_grad_(True)
 
-""" Learning environment dynamics """
+""" Fill replay buffer """
+obs, _ = envs.reset(seed=args.seed)
+# for _ in range(1000):
+#     actions = np.array([envs.single_action_space.sample() for _ in range(envs.num_envs)])
+#     next_obs, rewards, terminations, truncations, infos = envs.step(actions)
+
+#     real_next_obs = next_obs.copy()
+#     for idx, trunc in enumerate(truncations):
+#         if trunc:
+#             real_next_obs[idx] = infos["final_observation"][idx]
+#     rb.add(obs, real_next_obs, actions, rewards, terminations, infos)
+
+#     obs = next_obs
+
 if learn_dynamics:
-    obs, _ = env.reset()
-    for _ in range(rb.buffer_size):
-        action = dpc(torch.from_numpy(obs)).detach().numpy()
-        next_obs, reward, terminated, truncated, info = env.step(action)
+    """ Learning environment dynamics """
+    p_true = np.concat([A_env, B_env], axis=1)
+    p_init = np.concat([f.A.detach().numpy(), f.B.detach().numpy()], axis=1)
+    print(f"Before training: 'Distance' from true dynamics: {np.linalg.norm(p_true - p_init, 'fro')}")
+    critic.dynamics.train()
+    p_learn = np.concat([f.A.detach().numpy(), f.B.detach().numpy()], axis=1)
+    print(f"After training: 'Distance' from true dynamics: {np.linalg.norm(p_true - p_learn, 'fro')}")
 
-        real_next_obs = next_obs.copy()
-        for idx, trunc in enumerate(truncated):
-            if trunc:
-                real_next_obs[idx] = info["final_observation"][idx]
-        rb.add(obs, real_next_obs, action, reward, terminated, info)
-
-        obs = next_obs
-
-    params_sim, params_mpc = np.concat([A_sim, B_sim], axis=1), np.concat([A_mpc, B_mpc], axis=1)
-    print(f"Before training: 'Distance' from true dynamics: {np.linalg.norm(params_sim - params_mpc, 'fro')}")
-    dynamics.train()
-    print(f"After training: 'Distance' from true dynamics: {np.linalg.norm(params_sim - params_mpc, 'fro')}")
-    A_lrn = list(dynamics.best_model.values())[0].detach().numpy()
-    B_lrn = list(dynamics.best_model.values())[1].detach().numpy()
-    params_lrn = np.concat([A_sim, B_sim], axis=1)
-    print(f"After training: 'Distance' from true dynamics: {np.linalg.norm(params_sim - params_lrn, 'fro')}")
-
-"""
-Because dynamics.best_model is a deepcopy, mpc_model, concat_dynamics, A_mpc, and B_mpc are not updated to reflect
-"""
-
-""" Neuromancer stuff """
-batches = 5000
-b = 256
-problem = critic.setup_problem(mode)
-
-if mode == 'dpc':
+if learn_dpcontrol:
     """ Learning ficticious controller """
-    train_data = DictDataset({'x': 3.*torch.randn(3333, 1, n)}, name='train')  # Split conditions into train and dev
-    train_loader = torch.utils.data.DataLoader(train_data, batch_size=3333, shuffle=False,
-                                               collate_fn=train_data.collate_fn)
-    
-    dev_data = DictDataset({'x': 3.*torch.randn(3333, 1, n)}, name='dev')
-    dev_loader = torch.utils.data.DataLoader(dev_data, batch_size=3333, shuffle=False,
-                                             collate_fn=dev_data.collate_fn)
+    K_opt = calc_K(A_env, B_env, Q, R)
+    K_init = K
+    print(f"Before training: 'Distance' from optimal gain: {np.linalg.norm(K_opt - K_init, 'fro')}")
+    dpcontrol.train()
+    K_learn = mu.K.detach().numpy()
+    print(f"After training: 'Distance' from optimal gain: {np.linalg.norm(K_opt - K_learn, 'fro')}")
+    print(f"K' == K^*:\n{np.isclose(K_opt, K_learn)}")
 
-    # optimizer and trainer
-    dpc_optimizer = optim.Adam(critic.dpc.parameters(), lr=0.01)
-
-    '''
-    Two training loops presented: (A) Neuroamncer (B) Sample-based
-        (A) Neuroamncer: Uses preexisting codes from Neuromancer to do training process.
-                         Initial implementation using this produces an error of attempting
-                         to backward twice through the graph (presumably the initial action
-                         computed by the fictucious controller)
-        (B) Sample-based: Sample-based learning strategy similar to deterministic policy
-                          gradient, manipulating the ficticious controller to optimize the
-                          critic's Q-function. If opting for this scheme, two system definitions
-                          would not be required.
-                          
-    '''
-    # # Training loop A
-    # trainer = Trainer(
-    #     problem,
-    #     train_loader,
-    #     dev_loader,
-    #     dev_loader,
-    #     optimizer=dpc_optimizer,
-    #     epochs=1000,
-    #     train_metric='train_loss',
-    #     dev_metric='dev_loss',
-    #     eval_metric='dev_loss',
-    #     warmup=200,
-    # )
-    # best_model = trainer.train()
-    # print(f"'Distance' from optimal gain: {np.linalg.norm(K_opt - K, 'fro')}")
-
-    # Training loop B
-    problem = critic.setup_problem(mode='critic')
-    for i in range(batches):
-        s = 3.*torch.randn((b, n), **kwargs)
-
-        q_loss = -torch.mean(critic(s))
-
-        dpc_optimizer.zero_grad()
-        q_loss.backward()
-        dpc_optimizer.step()
-
-        if (i % 100) == 0:
-            print(f"Iter {i}: 'Distance' from optimal gain: {np.linalg.norm(K_opt - K, 'fro')}")
-
-    print(f'K == K^*:\n{np.isclose(K_opt, K)}')
-
-elif mode == 'critic':
-    """ Evaluating Q-function for random tuples, presumably coming from replay buffer """    
-    # Optimizer and objective
+else:
+    """ Learning Q-function """
     mse = torch.nn.MSELoss(reduction='mean')
-    critic_params = list(critic.mpc_mterm.parameters()) # + list(stage_cost.parameters()) + list(linear_dynamics.parameters())
-    critic_optimizer = optim.Adam(critic_params, lr=0.01)
+    critic_optimizer = optim.Adam(list(V.parameters()), lr=0.001)
 
     # Training loop
-    for i in range(batches):
+    for i in range(1000):
 
-        s = 3.*torch.randn((b, n), **kwargs)
-        with torch.no_grad():
-            a = dpc(s) # actions of optimal policy
-            r = -mpc_lterm(torch.concat((s,a), dim=-1)) # negative quadratic
-            next_s = mpc_model(torch.concat((s,a), dim=-1)) # nominal dynamics
-
-        # Steps for Q-learning!
-        q_targ = r + critic(next_s)
-        q_pred = critic(s, a)
+        """
+        Currently, the following is not always true:
+        f(torch.concat((batch.observations, batch.actions), dim=-1)) == batch.next_observations
+        originally thought this was due to early truncation, but I think it may be due to termination as well?
+        """
+        obs = fill_rb(rb, envs, args, obs, n_transitions=args.batch_size)
+        # obs = 3.*torch.randn((n_env, n), **kwargs)
+        # with torch.no_grad():
+        #     actions = mu(obs) # actions of optimal policy
+        #     rewards = -l(torch.concat((obs,actions), dim=-1)).squeeze(1) # negative quadratic
+        #     real_next_obs = f(torch.concat((obs,actions), dim=-1)) # nominal dynamics
+        #     terminations = [None] * 64
+        # rb.add(obs, real_next_obs, actions, rewards, terminations, {})
+        
+        batch = rb.sample(args.batch_size)
+        
+        q_targ = batch.rewards + critic(batch.next_observations)
+        q_pred = critic(batch.observations, batch.actions)
         td_loss = mse(q_pred, q_targ)
 
         critic_optimizer.zero_grad()
@@ -222,7 +230,6 @@ elif mode == 'critic':
         critic_optimizer.step()
 
         if (i % 100) == 0:
-            P = L.T @ L + mpc_mterm.epsilon*np.diag(np.ones(n, **np_kwargs))
-            print(f"Iter {i}: 'Distance' from optimal value function: {np.linalg.norm(P_opt - P, 'fro')}")
+            print(f"Iter {i}: 'Distance' from optimal value function: {np.linalg.norm(P_opt - V.P.detach().numpy(), 'fro')}")
 
-    print(f'P == P^*:\n{np.isclose(P_opt, P)}')
+    print(f'P == P^*:\n{np.isclose(P_opt, V.P.detach().numpy())}')    

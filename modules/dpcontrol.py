@@ -78,8 +78,8 @@ class DPControl(nn.Module):
         train_loader = self._train_loader()
         trainer = Trainer(self.problem, train_loader,
                           optimizer=self.opt,
-                          epochs=1000, epoch_verbose=100,
-                          patience=400,
+                          epochs=1, epoch_verbose=4,
+                          patience=1,
                           train_metric='train_loss', eval_metric='train_loss') # can add a test loss, but the dataset is constantly being updated anyway
         self.best_model = trainer.train() # output is a deepcopy
         return
@@ -110,12 +110,13 @@ if __name__ == "__main__":
     from mpcomponents import QuadraticStageCost, QuadraticTerminalCost, LinearDynamics, LinearPolicy
     from dynamics import Dynamics
     from templates import template_linear_model, LQREnv
-    from utils import calc_K, calc_P
+    from utils import calc_K, calc_P, fill_rb
 
     """ CleanRL setup """
     gym.register(
         id="gymnasium_env/LQR-v0",
         entry_point=LQREnv,
+        # max_episode_steps=10
     )
 
     @dataclass
@@ -150,13 +151,13 @@ if __name__ == "__main__":
         """total timesteps of the experiments"""
         learning_rate: float = 3e-4
         """the learning rate of the optimizer"""
-        buffer_size: int = int(1e3)
+        buffer_size: int = int(1e6)
         """the replay memory buffer size"""
         gamma: float = 0.99
         """the discount factor gamma"""
         tau: float = 0.005
         """target smoothing coefficient (default: 0.005)"""
-        batch_size: int = 256
+        batch_size: int = 64
         """the batch size of sample from the reply memory"""
         exploration_noise: float = 0.1
         """the scale of exploration noise"""
@@ -187,8 +188,9 @@ if __name__ == "__main__":
     torch.manual_seed(args.seed)
     torch.backends.cudnn.deterministic = args.torch_deterministic
 
+    n_envs = 1
     run_name = f"{args.env_id}__{args.exp_name}__{args.seed}__{int(time.time())}"
-    envs = gym.vector.SyncVectorEnv([make_env(args.env_id, args.seed, 0, args.capture_video, run_name)])
+    envs = gym.vector.SyncVectorEnv([make_env(args.env_id, args.seed, 0, args.capture_video, run_name) for _ in range(n_envs)])
 
     rb = ReplayBuffer(
         args.buffer_size,
@@ -196,18 +198,17 @@ if __name__ == "__main__":
         envs.single_action_space,
         device=kwargs['device'],
         handle_timeout_termination=False,
+        # n_envs=n_envs
     )
 
     """ User settings: """
     learn_dynamics = False
 
     """ System information """
-    b = 1
-    n = 2
-    m = n
-    A_env, B_env = np.diag(np.ones(n, **np_kwargs)), np.diag(np.ones(m, **np_kwargs)),
-    
-    Q, R = np.diag(np.ones(n, **np_kwargs)), np.diag(np.ones(m, **np_kwargs))
+    b, n, m = 1, envs.get_attr("n")[0], envs.get_attr("m")[0]
+    A_env, B_env = envs.get_attr("A")[0], envs.get_attr("B")[0]
+    Q, R = envs.get_attr("Q")[0], envs.get_attr("R")[0]
+
     A = np.random.uniform(-1., 1., (n,n)).astype(np_kwargs['dtype']) if learn_dynamics else A_env
     B = np.random.uniform(-1., 1., (n,m)).astype(np_kwargs['dtype']) if learn_dynamics else B_env
     K = np.random.uniform(-1., 1., (m,n)).astype(np_kwargs['dtype'])
@@ -227,17 +228,17 @@ if __name__ == "__main__":
 
     """ Fill replay buffer """
     obs, _ = envs.reset(seed=args.seed)
-    for _ in range(args.buffer_size):
-        actions = np.array([envs.single_action_space.sample() for _ in range(envs.num_envs)])
-        next_obs, rewards, terminations, truncations, infos = envs.step(actions)
+    # for _ in range(1000):
+    #     actions = np.array([envs.single_action_space.sample() for _ in range(envs.num_envs)])
+    #     next_obs, rewards, terminations, truncations, infos = envs.step(actions)
 
-        real_next_obs = next_obs.copy()
-        for idx, trunc in enumerate(truncations):
-            if trunc:
-                real_next_obs[idx] = infos["final_observation"][idx]
-        rb.add(obs, real_next_obs, actions, rewards, terminations, infos)
+    #     real_next_obs = next_obs.copy()
+    #     for idx, trunc in enumerate(truncations):
+    #         if trunc:
+    #             real_next_obs[idx] = infos["final_observation"][idx]
+    #     rb.add(obs, real_next_obs, actions, rewards, terminations, infos)
 
-        obs = next_obs
+    #     obs = next_obs
 
     """ Learning environment dynamics """
     if learn_dynamics:
@@ -250,9 +251,14 @@ if __name__ == "__main__":
 
     """ Learning ficticious controller """
     K_opt = calc_K(A_env, B_env, Q, R)
-    K_init = K
+    K_init = K.copy()
     print(f"Before training: 'Distance' from optimal gain: {np.linalg.norm(K_opt - K_init, 'fro')}")
-    dpcontrol.train()
-    K_learn = mu.K.detach().numpy()
-    print(f"After training: 'Distance' from true dynamics: {np.linalg.norm(K_opt - K_learn, 'fro')}")
+    for i in range(1000):
+        obs = fill_rb(rb, envs, args, obs, n_transitions=args.batch_size)
+        dpcontrol.train()
+
+        if (i % 100) == 0:
+            K_learn = mu.K.detach().numpy()
+            print(f"Iter {i}: 'Distance' from optimal gain: {np.linalg.norm(K_opt - K_learn, 'fro')}")
+
     print(f"K' == K^*:\n{np.isclose(K_opt, K_learn)}")

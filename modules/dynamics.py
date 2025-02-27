@@ -50,7 +50,7 @@ class Dynamics(nn.Module):
         self.problem = Problem([self.model], self.obj)
 
         # Setup optimizer
-        self.opt = optim.AdamW(self.model.parameters(), 0.001)
+        self.opt = optim.Adam(self.model.parameters(), 0.001)
 
     def forward(self,x,u):
         return self.dx(x,u)
@@ -59,8 +59,8 @@ class Dynamics(nn.Module):
         train_loader = self._train_loader()
         trainer = Trainer(self.problem, train_loader,
                           optimizer=self.opt,
-                          epochs=1000, epoch_verbose=100,
-                          patience=40,
+                          epochs=1, epoch_verbose=4,
+                          patience=1,
                           train_metric='train_loss', eval_metric='train_loss') # can add a test loss, but the dataset is constantly being updated anyway
         self.best_model = trainer.train() # output is a deepcopy
         return
@@ -109,11 +109,13 @@ if __name__ == "__main__":
     from mpcritic import InputConcat
     from mpcomponents import LinearDynamics
     from templates import LQREnv
+    from utils import fill_rb
     
     """ CleanRL setup """
     gym.register(
         id="gymnasium_env/LQR-v0",
         entry_point=LQREnv,
+        # max_episode_steps=10
     )
 
     @dataclass
@@ -148,13 +150,13 @@ if __name__ == "__main__":
         """total timesteps of the experiments"""
         learning_rate: float = 3e-4
         """the learning rate of the optimizer"""
-        buffer_size: int = int(1e3)
+        buffer_size: int = int(1e6)
         """the replay memory buffer size"""
         gamma: float = 0.99
         """the discount factor gamma"""
         tau: float = 0.005
         """target smoothing coefficient (default: 0.005)"""
-        batch_size: int = 256
+        batch_size: int = 64
         """the batch size of sample from the reply memory"""
         exploration_noise: float = 0.1
         """the scale of exploration noise"""
@@ -185,8 +187,9 @@ if __name__ == "__main__":
     torch.manual_seed(args.seed)
     torch.backends.cudnn.deterministic = args.torch_deterministic
 
+    n_envs = 1
     run_name = f"{args.env_id}__{args.exp_name}__{args.seed}__{int(time.time())}"
-    envs = gym.vector.SyncVectorEnv([make_env(args.env_id, args.seed, 0, args.capture_video, run_name)])
+    envs = gym.vector.SyncVectorEnv([make_env(args.env_id, args.seed, 0, args.capture_video, run_name) for _ in range(n_envs)])
 
     rb = ReplayBuffer(
         args.buffer_size,
@@ -194,45 +197,58 @@ if __name__ == "__main__":
         envs.single_action_space,
         kwargs['device'],
         handle_timeout_termination=False,
+        n_envs=n_envs
     )
 
     """ Fill replay buffer """
     obs, _ = envs.reset(seed=args.seed)
-    for _ in range(args.buffer_size):
-        actions = np.array([envs.single_action_space.sample() for _ in range(envs.num_envs)])
-        next_obs, rewards, terminations, truncations, infos = envs.step(actions)
+    # for _ in range(1000):
+    #     actions = np.array([envs.single_action_space.sample() for _ in range(envs.num_envs)])
+    #     next_obs, rewards, terminations, truncations, infos = envs.step(actions)
 
-        real_next_obs = next_obs.copy()
-        for idx, trunc in enumerate(truncations):
-            if trunc:
-                real_next_obs[idx] = infos["final_observation"][idx]
-        rb.add(obs, real_next_obs, actions, rewards, terminations, infos)
+    #     real_next_obs = next_obs.copy()
+    #     for idx, trunc in enumerate(truncations):
+    #         if trunc:
+    #             real_next_obs[idx] = infos["final_observation"][idx]
+    #     rb.add(obs, real_next_obs, actions, rewards, terminations, infos)
 
-        obs = next_obs
+    #     obs = next_obs
 
     """ Dynamics setup """
-    b, n, m = envs.num_envs, envs.single_observation_space.shape[0], envs.single_action_space.shape[0]
+    b, n, m = envs.num_envs, envs.get_attr("n")[0], envs.get_attr("m")[0]
 
     A = np.random.uniform(-1., 1., (n,n)).astype(np_kwargs['dtype'])
     B = np.random.uniform(-1., 1., (n,m)).astype(np_kwargs['dtype'])
     
-    l4c_model = LinearDynamics(n, m, A, B)
-    concat_dynamics = InputConcat(l4c_model)
-    dynamics = Dynamics(envs, rb, dx=concat_dynamics)
+    f = LinearDynamics(n, m, A, B)
+    concat_f = InputConcat(f)
+    dynamics = Dynamics(envs, rb, dx=concat_f)
 
     """ Model predictions """
-    action = envs.action_space.sample()
+    action = np.random.uniform(-1, 1, (b,m)).astype(np_kwargs['dtype'])# envs.action_space.sample()
     pred_dx = dynamics.dx(torch.from_numpy(obs).to(**kwargs), torch.from_numpy(action).to(**kwargs))
     pred_dyn = dynamics(torch.from_numpy(obs).to(**kwargs), torch.from_numpy(action).to(**kwargs))
     print(f"s'_dx == s'_dyn: {torch.allclose(pred_dx, pred_dyn)}")
 
     """ Rollout eval """
-    dynamics.rollout_eval()
+    if n_envs == 1:
+        dynamics.rollout_eval()
 
     """ Training """
-    A_env, B_env = np.diag(np.ones(2, **np_kwargs)), np.diag(np.ones(2, **np_kwargs)),
+    A_env, B_env = envs.get_attr("A")[0], envs.get_attr("B")[0]
+    p_true = np.concat([A_env, B_env], axis=1)
+
     A_init, B_init = A.copy(), B.copy()
-    dynamics.train()
-    A_train, B_train = l4c_model.A.detach().numpy(), l4c_model.B.detach().numpy()
-    print(f"A' != A: {not np.allclose(A_init, A_train)}; B' != B: {not np.allclose(B_init, B_train)}")
-    print(f"A' == A_env:\n{np.isclose(A_env, A_train)};\nB' == B_env:\n{np.isclose(A_env, A_train)}")
+    p_init = np.concat([f.A.detach().numpy(), f.B.detach().numpy()], axis=1)
+
+    obs, _ = envs.reset(seed=args.seed)
+    for i in range(1000):
+        obs = fill_rb(rb, envs, args, obs, n_transitions=args.batch_size)
+        dynamics.train()
+ 
+        if (i % 100) == 0:
+            p_learn = np.concat([f.A.detach().numpy(), f.B.detach().numpy()], axis=1)
+            print(f"Iter {i}: 'Distance' from true model: {np.linalg.norm(p_true - p_learn, 'fro')}")
+
+    print(f"A' != A: {not np.allclose(A_init, f.A.detach().numpy())}; B' != B: {not np.allclose(B_init, f.B.detach().numpy())}")
+    print(f"A' == A_env:\n{np.isclose(A_env, f.A.detach().numpy())};\nB' == B_env:\n{np.isclose(B_env, f.B.detach().numpy())}")
