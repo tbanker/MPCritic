@@ -118,8 +118,6 @@ class PDQuadraticTerminalCost(nn.Module):
         """ x^TPx """
         x = input
         return (x @ self.P * x).sum(axis=1, keepdims=True)
-        # P = self.L.T @ self.L + self.epsilon*torch.eye(self.n)
-        # return (x @ P * x).sum(axis=1, keepdims=True)
 
 if __name__ == '__main__':
     import numpy as np

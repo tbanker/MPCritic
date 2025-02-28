@@ -68,6 +68,7 @@ class Dynamics(nn.Module):
     def _train_loader(self):
 
         # need to coordinate the number of epoch and batch size
+
         batch = self.rb.sample(1000)
         data = {}
         data['x'] = batch.observations.unsqueeze(1).to(**self.model_kwargs)
@@ -115,7 +116,6 @@ if __name__ == "__main__":
     gym.register(
         id="gymnasium_env/LQR-v0",
         entry_point=LQREnv,
-        # max_episode_steps=10
     )
 
     @dataclass
@@ -200,23 +200,12 @@ if __name__ == "__main__":
         n_envs=n_envs
     )
 
-    """ Fill replay buffer """
-    obs, _ = envs.reset(seed=args.seed)
-    # for _ in range(1000):
-    #     actions = np.array([envs.single_action_space.sample() for _ in range(envs.num_envs)])
-    #     next_obs, rewards, terminations, truncations, infos = envs.step(actions)
-
-    #     real_next_obs = next_obs.copy()
-    #     for idx, trunc in enumerate(truncations):
-    #         if trunc:
-    #             real_next_obs[idx] = infos["final_observation"][idx]
-    #     rb.add(obs, real_next_obs, actions, rewards, terminations, infos)
-
-    #     obs = next_obs
-
-    """ Dynamics setup """
+    """ System information """
     b, n, m = envs.num_envs, envs.get_attr("n")[0], envs.get_attr("m")[0]
+    A_env, B_env = envs.get_attr("A")[0], envs.get_attr("B")[0]
+    Q, R = envs.get_attr("Q")[0], envs.get_attr("R")[0]
 
+    """ Model setup """
     A = np.random.uniform(-1., 1., (n,n)).astype(np_kwargs['dtype'])
     B = np.random.uniform(-1., 1., (n,m)).astype(np_kwargs['dtype'])
     
@@ -225,6 +214,8 @@ if __name__ == "__main__":
     dynamics = Dynamics(envs, rb, dx=concat_f)
 
     """ Model predictions """
+    obs, _ = envs.reset(seed=args.seed)
+
     action = np.random.uniform(-1, 1, (b,m)).astype(np_kwargs['dtype'])# envs.action_space.sample()
     pred_dx = dynamics.dx(torch.from_numpy(obs).to(**kwargs), torch.from_numpy(action).to(**kwargs))
     pred_dyn = dynamics(torch.from_numpy(obs).to(**kwargs), torch.from_numpy(action).to(**kwargs))
@@ -235,20 +226,16 @@ if __name__ == "__main__":
         dynamics.rollout_eval()
 
     """ Training """
-    A_env, B_env = envs.get_attr("A")[0], envs.get_attr("B")[0]
     p_true = np.concat([A_env, B_env], axis=1)
-
-    A_init, B_init = A.copy(), B.copy()
     p_init = np.concat([f.A.detach().numpy(), f.B.detach().numpy()], axis=1)
 
     obs, _ = envs.reset(seed=args.seed)
     for i in range(1000):
-        obs = fill_rb(rb, envs, args, obs, n_transitions=args.batch_size)
+        obs = fill_rb(rb, envs, obs, n_transitions=args.batch_size)
         dynamics.train()
  
         if (i % 100) == 0:
             p_learn = np.concat([f.A.detach().numpy(), f.B.detach().numpy()], axis=1)
             print(f"Iter {i}: 'Distance' from true model: {np.linalg.norm(p_true - p_learn, 'fro')}")
 
-    print(f"A' != A: {not np.allclose(A_init, f.A.detach().numpy())}; B' != B: {not np.allclose(B_init, f.B.detach().numpy())}")
     print(f"A' == A_env:\n{np.isclose(A_env, f.A.detach().numpy())};\nB' == B_env:\n{np.isclose(B_env, f.B.detach().numpy())}")

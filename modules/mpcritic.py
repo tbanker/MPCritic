@@ -9,8 +9,6 @@ from copy import copy
 
 from neuromancer.dataset import DictDataset
 from neuromancer.system import Node, System
-from neuromancer.constraint import variable, Objective
-from neuromancer.loss import PenaltyLoss
 from neuromancer.problem import Problem
 
 np_kwargs = {'dtype' : np.float32}
@@ -31,6 +29,7 @@ class InputConcat(torch.nn.Module):
 class MPCritic(nn.Module):
     def __init__(self, template_model, dpcontrol, unc_p=None, mpc_settings=None):
         super().__init__()
+
         self.template_model = template_model
         self.dpcontrol = dpcontrol
 
@@ -49,15 +48,34 @@ class MPCritic(nn.Module):
         self.obj = dpcontrol.obj
         self.problem = Problem([self.model], self.obj)
 
+        # Critic evaluation functions
         self.batched_fwd_s = torch.vmap(self.forward_critic_s)
         self.batched_fwd_sa = torch.vmap(self.forward_critic_sa)
 
-        # MPC settings
+        # MPC settings & objects
+        self.mpc_settings = {'n_horizon': self.dpcontrol.H,
+                        'n_robust': 0,
+                        'open_loop': False,
+                        't_step': 1.0,
+                    #  'use_terminal_bounds' : False,
+                    #  'state_discretization' : 'collocation',
+                    #  'collocation_type': 'radau',
+                    #  'collocation_deg': 2,
+                    #  'collocation_ni': 2,
+                    #  'nl_cons_check_colloc_points' : False,
+                    #  'nl_cons_single_slack' : False,
+                    #  'cons_check_colloc_points' : True,
+                        'store_full_solution': True,
+                    #  'store_lagr_multiplier' : True,
+                    #  'store_solver_stats' : []
+                        'nlpsol_opts': {'ipopt.linear_solver': 'mumps'}, #LQR fails w/ MA27
+                        } if mpc_settings == None else mpc_settings
         self.dx_mpc = self.dpcontrol.dynamics.dx.module
         self.l_mpc = self.dpcontrol.l.module
         self.V_mpc = self.dpcontrol.V
         self.unc_p = unc_p
 
+        # L4C settings & objects
         self.l4c_kwargs = {'device' : 'cpu',
                            'batched' : True,
                            'mutable' : True,
@@ -68,24 +86,6 @@ class MPCritic(nn.Module):
         self.dx_l4c = l4c.L4CasADi(self.dx_mpc, **self.l4c_kwargs)
         self.l_l4c = l4c.L4CasADi(self.l_mpc, **self.l4c_kwargs)
         self.V_l4c = l4c.L4CasADi(self.V_mpc, **self.l4c_kwargs)
-
-        self.mpc_settings = {'n_horizon': self.dpcontrol.H,
-                             'n_robust': 0,
-                             'open_loop': False,
-                             't_step': 1.0,
-                            #  'use_terminal_bounds' : False,
-                            #  'state_discretization' : 'collocation',
-                            #  'collocation_type': 'radau',
-                            #  'collocation_deg': 2,
-                            #  'collocation_ni': 2,
-                            #  'nl_cons_check_colloc_points' : False,
-                            #  'nl_cons_single_slack' : False,
-                            #  'cons_check_colloc_points' : True,
-                             'store_full_solution': True,
-                            #  'store_lagr_multiplier' : True,
-                            #  'store_solver_stats' : []
-                             'nlpsol_opts': {'ipopt.linear_solver': 'mumps'}, #LQR fails w/ MA27
-                             } if mpc_settings == None else mpc_settings
 
     def forward(self, s, a=None):
         """ batched critic operation """
@@ -171,9 +171,9 @@ if __name__ == '__main__':
     import gymnasium as gym
     from stable_baselines3.common.buffers import ReplayBuffer
 
-    from mpcomponents import QuadraticStageCost, QuadraticTerminalCost, LinearDynamics, LinearPolicy
     from dynamics import Dynamics
     from dpcontrol import DPControl
+    from mpcomponents import QuadraticStageCost, QuadraticTerminalCost, LinearDynamics, LinearPolicy
     from templates import template_linear_model, LQREnv
     from utils import calc_K, calc_P
 
@@ -184,7 +184,6 @@ if __name__ == '__main__':
     gym.register(
         id="gymnasium_env/LQR-v0",
         entry_point=LQREnv,
-        max_episode_steps=10
     )
 
     @dataclass
@@ -272,15 +271,14 @@ if __name__ == '__main__':
     A_env, B_env = envs.get_attr("A")[0], envs.get_attr("B")[0]
     Q, R = envs.get_attr("Q")[0], envs.get_attr("R")[0]
 
-    K = -0.5 * np.ones((m,n), **np_kwargs)
-    P = calc_P(A_env, B_env, Q, R).astype(np_kwargs['dtype'])
-    unc_p = {'A' : [A_env],
-             'B' : [A_env]}
+    P_opt = calc_P(A_env, B_env, Q, R).astype(np_kwargs['dtype'])
 
-    """ Agent information """
+    """ Model setup """
+    K = -0.5 * np.ones((m,n), **np_kwargs)
+
     mpc_horizon = 1
     l = QuadraticStageCost(n, m, Q, R)
-    V = QuadraticTerminalCost(n, P)
+    V = QuadraticTerminalCost(n, P_opt)
     f = LinearDynamics(n, m, A_env, B_env)
     mu = LinearPolicy(n, m, K)
 
@@ -289,8 +287,10 @@ if __name__ == '__main__':
 
     dpcontrol = DPControl(envs, rb, mpc_horizon, dynamics, l, V, mu)
 
-    model = template_linear_model(n, m)
-    critic = MPCritic(model, dpcontrol, unc_p)
+    template_model = template_linear_model(n, m)
+    unc_p = {'A' : [A_env],
+             'B' : [A_env]}
+    critic = MPCritic(template_model, dpcontrol, unc_p)
 
     """ Different outputs for given action """
     obs, _ = envs.reset()
@@ -314,7 +314,7 @@ if __name__ == '__main__':
 
     q_s = critic(s=x)
     q_sa = critic(s=x, a=mu(x))
-    P = torch.from_numpy(P)
-    V_s = -(x @ P * x).sum(axis=1, keepdims=True)
+    P_opt = torch.from_numpy(P_opt)
+    V_opt = -(x @ P_opt * x).sum(axis=1, keepdims=True)
     print(f'Q^*(s) == Q^*(s,a=K^*(s))): {torch.allclose(q_s, q_sa)}')
-    print(f'Q^*(s) == V^*(s)): {torch.allclose(q_s, V_s)}')
+    print(f'Q^*(s) == V^*(s)): {torch.allclose(q_s, V_opt)}')

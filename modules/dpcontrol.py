@@ -44,7 +44,6 @@ class DPControl(nn.Module):
         self.nx = np.array(env.single_observation_space.shape).prod()
         self.nu = np.array(env.single_action_space.shape).prod()
         self.H = H # mpc horizon per do-mpc
-
         self.mu = mu if mu != None else blocks.ResMLP(self.nx, self.nu, bias=True,
                                                       linear_map=torch.nn.Linear, nonlin=torch.nn.SiLU,
                                                       hsizes=[64 for h in range(2)])
@@ -103,12 +102,10 @@ if __name__ == "__main__":
     from dataclasses import dataclass
     import tyro
 
-    import numpy as np
-    import gymnasium as gym
     from stable_baselines3.common.buffers import ReplayBuffer
 
-    from mpcomponents import QuadraticStageCost, QuadraticTerminalCost, LinearDynamics, LinearPolicy
     from dynamics import Dynamics
+    from mpcomponents import QuadraticStageCost, QuadraticTerminalCost, LinearDynamics, LinearPolicy
     from templates import template_linear_model, LQREnv
     from utils import calc_K, calc_P, fill_rb
 
@@ -116,7 +113,6 @@ if __name__ == "__main__":
     gym.register(
         id="gymnasium_env/LQR-v0",
         entry_point=LQREnv,
-        # max_episode_steps=10
     )
 
     @dataclass
@@ -198,23 +194,22 @@ if __name__ == "__main__":
         envs.single_action_space,
         device=kwargs['device'],
         handle_timeout_termination=False,
-        # n_envs=n_envs
+        n_envs=n_envs
     )
 
-    """ User settings: """
-    learn_dynamics = False
-
     """ System information """
-    b, n, m = 1, envs.get_attr("n")[0], envs.get_attr("m")[0]
+    n, m = 1, envs.get_attr("n")[0], envs.get_attr("m")[0]
     A_env, B_env = envs.get_attr("A")[0], envs.get_attr("B")[0]
     Q, R = envs.get_attr("Q")[0], envs.get_attr("R")[0]
+    
+    K_opt = calc_K(A_env, B_env, Q, R)
 
-    A = np.random.uniform(-1., 1., (n,n)).astype(np_kwargs['dtype']) if learn_dynamics else A_env
-    B = np.random.uniform(-1., 1., (n,m)).astype(np_kwargs['dtype']) if learn_dynamics else B_env
+    """ Model setup """
+    A = A_env
+    B = B_env
     K = np.random.uniform(-1., 1., (m,n)).astype(np_kwargs['dtype'])
     P = calc_P(A, B, Q, R).astype(np_kwargs['dtype'])
     
-    """ DPControl information """
     mpc_horizon = 1
     l = QuadraticStageCost(n, m, Q, R)
     V = QuadraticTerminalCost(n, P)
@@ -226,35 +221,13 @@ if __name__ == "__main__":
 
     dpcontrol = DPControl(envs, rb, mpc_horizon, dynamics, l, V, mu)
 
-    """ Fill replay buffer """
-    obs, _ = envs.reset(seed=args.seed)
-    # for _ in range(1000):
-    #     actions = np.array([envs.single_action_space.sample() for _ in range(envs.num_envs)])
-    #     next_obs, rewards, terminations, truncations, infos = envs.step(actions)
-
-    #     real_next_obs = next_obs.copy()
-    #     for idx, trunc in enumerate(truncations):
-    #         if trunc:
-    #             real_next_obs[idx] = infos["final_observation"][idx]
-    #     rb.add(obs, real_next_obs, actions, rewards, terminations, infos)
-
-    #     obs = next_obs
-
-    """ Learning environment dynamics """
-    if learn_dynamics:
-        p_true = np.concat([A_env, B_env], axis=1)
-        p_init = np.concat([f.A.detach().numpy(), f.B.detach().numpy()], axis=1)
-        print(f"Before training: 'Distance' from true dynamics: {np.linalg.norm(p_true - p_init, 'fro')}")
-        dynamics.train()
-        p_learn = np.concat([f.A.detach().numpy(), f.B.detach().numpy()], axis=1)
-        print(f"After training: 'Distance' from true dynamics: {np.linalg.norm(p_true - p_learn, 'fro')}")
-
     """ Learning ficticious controller """
-    K_opt = calc_K(A_env, B_env, Q, R)
     K_init = K.copy()
     print(f"Before training: 'Distance' from optimal gain: {np.linalg.norm(K_opt - K_init, 'fro')}")
+
+    obs, _ = envs.reset(seed=args.seed)
     for i in range(1000):
-        obs = fill_rb(rb, envs, args, obs, n_transitions=args.batch_size)
+        obs = fill_rb(rb, envs, obs, n_transitions=args.batch_size)
         dpcontrol.train()
 
         if (i % 100) == 0:

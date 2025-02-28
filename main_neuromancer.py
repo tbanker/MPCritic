@@ -5,31 +5,31 @@ import time
 import numpy as np
 import torch
 from torch import optim
-from torch.utils.data import Dataset
-import matplotlib.pyplot as plt
-rel_do_mpc_path = os.path.join('..','..')
-sys.path.append(rel_do_mpc_path)
-import do_mpc
-from copy import copy
 
 import gymnasium as gym
+import tyro
 from stable_baselines3.common.buffers import ReplayBuffer
 from dataclasses import dataclass
-import tyro
 
-from modules.templates import template_linear_model, template_linear_simulator, LQREnv
-from modules.mpcomponents import QuadraticStageCost, QuadraticTerminalCost, PDQuadraticTerminalCost, LinearDynamics, LinearPolicy
+from modules.templates import template_linear_model, LQREnv
+from modules.mpcomponents import QuadraticStageCost, PDQuadraticTerminalCost, LinearDynamics, LinearPolicy
 from modules.mpcritic import MPCritic, InputConcat
 from modules.dynamics import Dynamics
 from modules.dpcontrol import DPControl
 from modules.utils import calc_K, calc_P, fill_rb
 
-from neuromancer.dataset import DictDataset
-from neuromancer.trainer import Trainer
-
 np_kwargs = {'dtype' : np.float32}
 kwargs = {'dtype' : torch.float32,
           'device' : 'cpu'}
+
+class HiddenPrints:
+    def __enter__(self):
+        self._original_stdout = sys.stdout
+        sys.stdout = open(os.devnull, 'w')
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        sys.stdout.close()
+        sys.stdout = self._original_stdout
 
 """ User settings: """
 learn_dynamics = False
@@ -39,7 +39,6 @@ learn_dpcontrol = False
 gym.register(
     id="gymnasium_env/LQR-v0",
     entry_point=LQREnv,
-    # max_episode_steps=10 # LQR environment doesn't handle this correctly
 )
 
 @dataclass
@@ -74,7 +73,7 @@ class Args:
     """total timesteps of the experiments"""
     learning_rate: float = 3e-4
     """the learning rate of the optimizer"""
-    buffer_size: int = int(1e3)
+    buffer_size: int = int(1e6)
     """the replay memory buffer size"""
     gamma: float = 0.99
     """the discount factor gamma"""
@@ -132,21 +131,15 @@ Q, R = envs.get_attr("Q")[0], envs.get_attr("R")[0]
 K_opt = calc_K(A_env, B_env, Q, R).astype(np_kwargs['dtype'])
 P_opt = calc_P(A_env, B_env, Q, R).astype(np_kwargs['dtype'])
 
-""" MPCritic stuff """
-# numpy arrays share memory with corresponding pytorch model params
-mpc_horizon = 1
-A_mpc = np.random.uniform(-1., 1., (n,n)).astype(np_kwargs['dtype']) if learn_dynamics else A_env.copy()
-B_mpc = np.random.uniform(-1., 1., (n,m)).astype(np_kwargs['dtype']) if learn_dynamics else B_env.copy()
+""" Model setup """
+A_mpc = A_env + 0.5*np.random.uniform(-1., 1., (n,n)).astype(np_kwargs['dtype']) if learn_dynamics else A_env.copy()
+B_mpc = B_env + 0.5*np.random.uniform(-1., 1., (n,m)).astype(np_kwargs['dtype']) if learn_dynamics else B_env.copy()
 Q_mpc, R_mpc = Q.copy(), R.copy()
+K = np.random.uniform(-1., 1., (m,n)).astype(np_kwargs['dtype']) if learn_dpcontrol else K_opt
+L = np.random.uniform(-1., 1., (n,n)).astype(np_kwargs['dtype'])
 
-if learn_dpcontrol:
-    K = np.random.uniform(-1., 1., (m,n)).astype(np_kwargs['dtype'])
-    P = P_opt
-    V = QuadraticTerminalCost(n, P)
-else:
-    K = K_opt
-    L = np.random.uniform(-1., 1., (n,n)).astype(np_kwargs['dtype'])
-    V = PDQuadraticTerminalCost(n, L)
+mpc_horizon = 1
+V = PDQuadraticTerminalCost(n, L)
 l = QuadraticStageCost(n, m, Q_mpc, R_mpc)
 f = LinearDynamics(n, m, A_mpc, B_mpc)
 mu = LinearPolicy(n, m, K)
@@ -159,77 +152,43 @@ dpcontrol = DPControl(envs, rb, mpc_horizon, dynamics, l, V, mu)
 template_model = template_linear_model(n, m)
 unc_p = {'A' : [A_mpc],
          'B' : [B_mpc]} # 1 uncertainty scenario considered
-model = template_linear_model(n, m)
 critic = MPCritic(template_model, dpcontrol, unc_p)
 critic.setup_mpc()
+
+""" Learning Q-function """
 critic.requires_grad_(True)
+mse = torch.nn.MSELoss(reduction='mean')
+critic_optimizer = optim.Adam(list(V.parameters()), lr=0.01)
+p_true = np.concat([A_env, B_env], axis=1)
 
-""" Fill replay buffer """
 obs, _ = envs.reset(seed=args.seed)
-# for _ in range(1000):
-#     actions = np.array([envs.single_action_space.sample() for _ in range(envs.num_envs)])
-#     next_obs, rewards, terminations, truncations, infos = envs.step(actions)
+for i in range(100000):
 
-#     real_next_obs = next_obs.copy()
-#     for idx, trunc in enumerate(truncations):
-#         if trunc:
-#             real_next_obs[idx] = infos["final_observation"][idx]
-#     rb.add(obs, real_next_obs, actions, rewards, terminations, infos)
+    obs = fill_rb(rb, envs, obs, policy=mu, n_transitions=args.batch_size)
+    
+    batch = rb.sample(args.batch_size)
 
-#     obs = next_obs
+    with HiddenPrints():
+        if learn_dynamics:
+            critic.dpcontrol.dynamics.train()
+        if learn_dpcontrol:
+            critic.dpcontrol.train()
+    
+    q_targ = batch.rewards + critic(s=batch.next_observations)
+    q_pred = critic(s=batch.observations, a=batch.actions)
+    td_loss = mse(q_pred, q_targ)
 
-if learn_dynamics:
-    """ Learning environment dynamics """
-    p_true = np.concat([A_env, B_env], axis=1)
-    p_init = np.concat([f.A.detach().numpy(), f.B.detach().numpy()], axis=1)
-    print(f"Before training: 'Distance' from true dynamics: {np.linalg.norm(p_true - p_init, 'fro')}")
-    critic.dynamics.train()
-    p_learn = np.concat([f.A.detach().numpy(), f.B.detach().numpy()], axis=1)
-    print(f"After training: 'Distance' from true dynamics: {np.linalg.norm(p_true - p_learn, 'fro')}")
+    critic_optimizer.zero_grad()
+    td_loss.backward()
+    critic_optimizer.step()
 
-if learn_dpcontrol:
-    """ Learning ficticious controller """
-    K_opt = calc_K(A_env, B_env, Q, R)
-    K_init = K
-    print(f"Before training: 'Distance' from optimal gain: {np.linalg.norm(K_opt - K_init, 'fro')}")
-    dpcontrol.train()
-    K_learn = mu.K.detach().numpy()
-    print(f"After training: 'Distance' from optimal gain: {np.linalg.norm(K_opt - K_learn, 'fro')}")
-    print(f"K' == K^*:\n{np.isclose(K_opt, K_learn)}")
+    if (i % 100) == 0:
+        # when learning P and K, approaches optimas around iter 3000 :)
+        # when learning P, K, A, and B, approaches optimas around iter 30000 :O
+        p_learn = np.concat([f.A.detach().numpy(), f.B.detach().numpy()], axis=1)
+        print(f"Iter {i}: 'Distance' from...\n \
+            optimal value function: {np.linalg.norm(P_opt - V.P.detach().numpy(), 'fro')}\n \
+            optimal gain: {np.linalg.norm(K_opt - mu.K.detach().numpy(), 'fro')}\n \
+            true model: {np.linalg.norm(p_true - p_learn, 'fro')}")
 
-else:
-    """ Learning Q-function """
-    mse = torch.nn.MSELoss(reduction='mean')
-    critic_optimizer = optim.Adam(list(V.parameters()), lr=0.001)
-
-    # Training loop
-    for i in range(1000):
-
-        """
-        Currently, the following is not always true:
-        f(torch.concat((batch.observations, batch.actions), dim=-1)) == batch.next_observations
-        originally thought this was due to early truncation, but I think it may be due to termination as well?
-        """
-        obs = fill_rb(rb, envs, args, obs, n_transitions=args.batch_size)
-        # obs = 3.*torch.randn((n_env, n), **kwargs)
-        # with torch.no_grad():
-        #     actions = mu(obs) # actions of optimal policy
-        #     rewards = -l(torch.concat((obs,actions), dim=-1)).squeeze(1) # negative quadratic
-        #     real_next_obs = f(torch.concat((obs,actions), dim=-1)) # nominal dynamics
-        #     terminations = [None] * 64
-        # rb.add(obs, real_next_obs, actions, rewards, terminations, {})
-        
-        batch = rb.sample(args.batch_size)
-        
-        q_targ = batch.rewards + critic(batch.next_observations)
-        q_pred = critic(batch.observations, batch.actions)
-        td_loss = mse(q_pred, q_targ)
-
-        critic_optimizer.zero_grad()
-        td_loss.backward()
-        critic_optimizer.step()
-
-        if (i % 100) == 0:
-            print(f"Iter {i}: 'Distance' from optimal value function: {np.linalg.norm(P_opt - V.P.detach().numpy(), 'fro')}")
-
-    print(f'P == P^*:\n{np.isclose(P_opt, V.P.detach().numpy())}')    
+print(f'P == P^*:\n{np.isclose(P_opt, V.P.detach().numpy())}')    

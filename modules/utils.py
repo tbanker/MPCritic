@@ -15,7 +15,8 @@ def calc_K(A, B, Q, R):
     K = np.linalg.solve(LHS, RHS)
     return K
 
-def fill_rb(rb, envs, args, obs, policy=None, n_transitions=1000):
+def fill_rb(rb, envs, obs, policy=None, n_transitions=1000):
+    """ Add samples to RB following Clean-RL  """
     for _ in range(n_transitions):
         if policy is None:
             actions = np.array([envs.single_action_space.sample() for _ in range(envs.num_envs)])
