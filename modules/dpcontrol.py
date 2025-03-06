@@ -34,7 +34,7 @@ class InputConcat(torch.nn.Module):
         return self.module(z)
 
 class DPControl(nn.Module):
-    def __init__(self, env, rb, H, dynamics, l, V, mu=None, xlim=None, ulim=None):
+    def __init__(self, env, rb, H, dynamics, l, V, mu=None, xlim=None, ulim=None, opt="Adam", lr=0.001):
         super().__init__()
 
         self.env = env
@@ -72,7 +72,10 @@ class DPControl(nn.Module):
         self.problem = Problem([self.model], self.obj)
 
         # Setup optimizer
-        self.opt = optim.Adam(self.mu_node.parameters(), 0.001)
+        if opt == "Adam":
+            self.opt = optim.Adam(self.mu_node.parameters(), lr=lr)
+        else:
+            self.opt = optim.AdamW(self.mu_node.parameters(), lr=lr)
 
     def forward(self,x):
         return self.mu(x)
