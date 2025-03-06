@@ -172,15 +172,16 @@ def validation_test(
         P = np.random.uniform(size=(n,n)).astype(np_kwargs['dtype']) if learn_mpcritic else P_opt.copy()
 
     mpc_horizon = 1
+    lr = 0.01
     V = PDQuadraticTerminalCost(n, L) if pd_V else QuadraticTerminalCost(n, P)
     l = QuadraticStageCost(n, m, Q_mpc, R_mpc)
     f = LinearDynamics(n, m, A_mpc, B_mpc)
     mu = LinearPolicy(n, m, K)
 
     concat_f = InputConcat(f)
-    dynamics = Dynamics(envs, rb, dx=concat_f)
+    dynamics = Dynamics(envs, rb, dx=concat_f, lr=lr)
 
-    dpcontrol = DPControl(envs, rb, mpc_horizon, dynamics, l, V, mu)
+    dpcontrol = DPControl(envs, rb, mpc_horizon, dynamics, l, V, mu, lr=lr)
 
     template_model = template_linear_model(n, m)
     unc_p = {'A' : [A_mpc],
@@ -191,7 +192,7 @@ def validation_test(
     """ Learning Q-function """
     critic.requires_grad_(True)
     mse = torch.nn.MSELoss(reduction='mean')
-    critic_optimizer = optim.Adam(list(V.parameters()), lr=0.001)
+    critic_optimizer = optim.Adam(list(V.parameters()), lr=lr)
     p_true = np.concatenate([A_env, B_env], axis=1)
 
     results = {
@@ -235,7 +236,7 @@ def validation_test(
                     td_loss.backward()
                     critic_optimizer.step()
                 if learn_dpcontrol:
-                    critic.dpcontrol.train(trainer_kwargs=trainer_kwargs, n_samples=batch_size, batch_size=batch_size)
+                    critic.dpcontrol.train(trainer_kwargs=trainer_kwargs, n_samples=batch_size, batch_size=batch_size)                  
 
         results["A_lrn"][i+1] = f.A.detach().numpy()
         results["B_lrn"][i+1] = f.B.detach().numpy()
@@ -283,7 +284,7 @@ if __name__ == '__main__':
                 # f_unc_scale = 1.0
 
                 seed = seed,
-                batch_size = 64, # just to run faster
+                batch_size = 256,
                 n_batches = 50000,
                 n_sysid_batches = 0,
                 n_samples = 100000,

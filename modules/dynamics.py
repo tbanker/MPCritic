@@ -23,7 +23,7 @@ kwargs = {'dtype' : torch.float32,
           'device' : 'cpu'}
 
 class Dynamics(nn.Module):
-    def __init__(self, env, rb, dx=None):
+    def __init__(self, env, rb, dx=None, opt="Adam", lr=0.001):
         super().__init__()
 
         self.env = env
@@ -50,7 +50,10 @@ class Dynamics(nn.Module):
         self.problem = Problem([self.model], self.obj)
 
         # Setup optimizer
-        self.opt = optim.Adam(self.model.parameters(), 0.001)
+        if opt == "Adam":
+            self.opt = optim.Adam(self.model.parameters(), lr=lr)
+        else:
+            self.opt = optim.AdamW(self.model.parameters(), lr=lr)
 
     def forward(self,x,u):
         return self.dx(x,u)
