@@ -179,4 +179,4 @@ _l4c_generated/
 runs/
 wandb/
 
-.png
+*.png
