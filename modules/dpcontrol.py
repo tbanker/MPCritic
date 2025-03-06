@@ -34,7 +34,7 @@ class InputConcat(torch.nn.Module):
         return self.module(z)
 
 class DPControl(nn.Module):
-    def __init__(self, env, rb, H, dynamics, l, V, mu=None):
+    def __init__(self, env, rb, H, dynamics, l, V, mu=None, xlim=None, ulim=None):
         super().__init__()
 
         self.env = env
@@ -51,6 +51,9 @@ class DPControl(nn.Module):
         self.l = InputConcat(l)
         self.V = V
 
+        self.xlim = xlim # np.array(2,n) 1-upper, 0-lower
+        self.ulim = ulim # np.array(2,m) 1-upper, 0-lower
+
         self.mu_node = Node(self.mu, ['x'], ['u'], name='mu')
         self.dx_node = Node(self.dynamics.dx, ['x','u'],['x'])
         self.l_node = Node(self.l, ['x','u'],['l'])
@@ -64,7 +67,8 @@ class DPControl(nn.Module):
         self.Vpred = variable('V')
         self.l_loss = Objective(var=(self.H+1.)*self.lpred[:, :-1, :], name='stage_loss')
         self.V_loss = Objective(var=(self.Vpred[:, [-1], :]), name='terminal_loss')
-        self.obj = PenaltyLoss([self.l_loss, self.V_loss], [])
+        self.constraints = [] if ((self.xlim is None) and (self.ulim is None)) else self._constraints()
+        self.obj = PenaltyLoss([self.l_loss, self.V_loss], self.constraints)
         self.problem = Problem([self.model], self.obj)
 
         # Setup optimizer
@@ -73,27 +77,54 @@ class DPControl(nn.Module):
     def forward(self,x):
         return self.mu(x)
     
-    def train(self):
-        train_loader = self._train_loader()
+    def train(self, trainer_kwargs, n_samples=1000, batch_size=256):
+        train_loader = self._train_loader(n_samples, batch_size)
         trainer = Trainer(self.problem, train_loader,
                           optimizer=self.opt,
-                          epochs=1, epoch_verbose=4,
-                          patience=1,
-                          train_metric='train_loss', eval_metric='train_loss') # can add a test loss, but the dataset is constantly being updated anyway
+                          train_metric='train_loss',
+                          eval_metric='train_loss',
+                          **trainer_kwargs) # can add a test loss, but the dataset is constantly being updated anyway
         self.best_model = trainer.train() # output is a deepcopy
         return
     
-    def _train_loader(self):
+    def _train_loader(self, n_samples, batch_size):
 
         # need to coordinate the number of epoch and batch size
-        batch = self.rb.sample(1000)
+        batch = self.rb.sample(n_samples)
         data = {}
         data['x'] = batch.observations.unsqueeze(1).to(**self.model_kwargs)
-        # data = {**data, **self.mu_node(data)}
         datadict = DictDataset(data)
 
-        train_loader = DataLoader(datadict, batch_size=64, shuffle=True, collate_fn=datadict.collate_fn)
+        train_loader = DataLoader(datadict, batch_size=batch_size, shuffle=True, collate_fn=datadict.collate_fn)
         return train_loader
+    
+    def _constraints(self):
+        
+        # penalties on constraints ought to be adjustable
+        
+        x = variable('x')
+        u = variable('u')
+        constraints = []
+
+        if self.xlim is not None:
+            state_lower_bound_penalty = 10.*(x > self.xlim[0])
+            state_upper_bound_penalty = 10.*(x > self.xlim[1])
+            state_lower_bound_penalty.name = 'x_min'
+            state_upper_bound_penalty.name = 'x_max'
+
+            constraints.append(state_lower_bound_penalty)
+            constraints.append(state_upper_bound_penalty)
+
+        if self.ulim is not None:
+            action_lower_bound_penalty = 10.*(u > self.ulim[0])
+            action_upper_bound_penalty = 10.*(u > self.ulim[1])
+            action_lower_bound_penalty.name = 'u_min'
+            action_upper_bound_penalty.name = 'u_max'
+
+            constraints.append(action_lower_bound_penalty)
+            constraints.append(action_upper_bound_penalty)
+
+        return constraints
 
 if __name__ == "__main__":
     import os
@@ -198,7 +229,7 @@ if __name__ == "__main__":
     )
 
     """ System information """
-    n, m = 1, envs.get_attr("n")[0], envs.get_attr("m")[0]
+    n, m = envs.get_attr("n")[0], envs.get_attr("m")[0]
     A_env, B_env = envs.get_attr("A")[0], envs.get_attr("B")[0]
     Q, R = envs.get_attr("Q")[0], envs.get_attr("R")[0]
     
@@ -219,16 +250,19 @@ if __name__ == "__main__":
     concat_f = InputConcat(f)
     dynamics = Dynamics(envs, rb, dx=concat_f)
 
-    dpcontrol = DPControl(envs, rb, mpc_horizon, dynamics, l, V, mu)
+    xlim = np.vstack([np.zeros(n), 0.1*np.ones(n)])
+    ulim = np.vstack([np.zeros(m), 0.1*np.ones(m)])
+    dpcontrol = DPControl(envs, rb, mpc_horizon, dynamics, l, V, mu, xlim=xlim, ulim=ulim)
 
     """ Learning ficticious controller """
     K_init = K.copy()
     print(f"Before training: 'Distance' from optimal gain: {np.linalg.norm(K_opt - K_init, 'fro')}")
+    trainer_kwargs = {'epochs':1, 'epoch_verbose':1, 'patience':1,}
 
     obs, _ = envs.reset(seed=args.seed)
     for i in range(1000):
-        obs = fill_rb(rb, envs, obs, n_transitions=args.batch_size)
-        dpcontrol.train()
+        obs = fill_rb(rb, envs, obs, n_samples=args.batch_size)
+        dpcontrol.train(trainer_kwargs=trainer_kwargs, n_samples=args.batch_size, batch_size=args.batch_size)
 
         if (i % 100) == 0:
             K_learn = mu.K.detach().numpy()

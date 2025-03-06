@@ -55,28 +55,26 @@ class Dynamics(nn.Module):
     def forward(self,x,u):
         return self.dx(x,u)
     
-    def train(self):
-        train_loader = self._train_loader()
+    def train(self, trainer_kwargs, n_samples=1000, batch_size=256):
+        train_loader = self._train_loader(n_samples, batch_size)
         trainer = Trainer(self.problem, train_loader,
                           optimizer=self.opt,
-                          epochs=1, epoch_verbose=4,
-                          patience=1,
-                          train_metric='train_loss', eval_metric='train_loss') # can add a test loss, but the dataset is constantly being updated anyway
+                          train_metric='train_loss',
+                          eval_metric='train_loss',
+                          **trainer_kwargs) # can add a test loss, but the dataset is constantly being updated anyway
         self.best_model = trainer.train() # output is a deepcopy
         return
     
-    def _train_loader(self):
+    def _train_loader(self, n_samples, batch_size):
 
-        # need to coordinate the number of epoch and batch size
-
-        batch = self.rb.sample(1000)
+        batch = self.rb.sample(n_samples)
         data = {}
         data['x'] = batch.observations.unsqueeze(1).to(**self.model_kwargs)
         data['u'] = batch.actions.unsqueeze(1).to(**self.model_kwargs)
         data['xtrue'] = batch.next_observations.unsqueeze(1).to(**self.model_kwargs)
         datadict = DictDataset(data)
 
-        train_loader = DataLoader(datadict, batch_size=64, shuffle=True, collate_fn=datadict.collate_fn)
+        train_loader = DataLoader(datadict, batch_size=batch_size, shuffle=True, collate_fn=datadict.collate_fn)
         return train_loader
     
     def rollout_eval(self):
@@ -226,16 +224,17 @@ if __name__ == "__main__":
         dynamics.rollout_eval()
 
     """ Training """
-    p_true = np.concat([A_env, B_env], axis=1)
-    p_init = np.concat([f.A.detach().numpy(), f.B.detach().numpy()], axis=1)
+    p_true = np.concatenate([A_env, B_env], axis=1)
+    p_init = np.concatenate([f.A.detach().numpy(), f.B.detach().numpy()], axis=1)
+    trainer_kwargs = {'epochs':1, 'epoch_verbose':1, 'patience':1,}
 
     obs, _ = envs.reset(seed=args.seed)
-    for i in range(1000):
-        obs = fill_rb(rb, envs, obs, n_transitions=args.batch_size)
-        dynamics.train()
+    for i in range(10000):
+        obs = fill_rb(rb, envs, obs, n_samples=args.batch_size)
+        dynamics.train(trainer_kwargs=trainer_kwargs, n_samples=args.batch_size, batch_size=args.batch_size)
  
         if (i % 100) == 0:
-            p_learn = np.concat([f.A.detach().numpy(), f.B.detach().numpy()], axis=1)
+            p_learn = np.concatenate([f.A.detach().numpy(), f.B.detach().numpy()], axis=1)
             print(f"Iter {i}: 'Distance' from true model: {np.linalg.norm(p_true - p_learn, 'fro')}")
 
     print(f"A' == A_env:\n{np.isclose(A_env, f.A.detach().numpy())};\nB' == B_env:\n{np.isclose(B_env, f.B.detach().numpy())}")

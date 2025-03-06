@@ -15,11 +15,13 @@ def calc_K(A, B, Q, R):
     K = np.linalg.solve(LHS, RHS)
     return K
 
-def fill_rb(rb, envs, obs, policy=None, n_transitions=1000):
+def fill_rb(rb, envs, obs, policy=None, sampling="Normal", n_samples=1000):
     """ Add samples to RB following Clean-RL  """
-    for _ in range(n_transitions):
-        if policy is None:
-            actions = np.array([envs.single_action_space.sample() for _ in range(envs.num_envs)])
+    for _ in range(n_samples):
+        if sampling == "Normal":
+            actions = np.array([envs.single_action_space.sample() for _ in range(envs.num_envs)]) # normal dist. N(0,1^2)
+        elif sampling == "Uniform":
+            actions = np.random.uniform(-1,1, size=(envs.num_envs, envs.single_action_space.shape[0])).astype(np.float32)
         else:
             actions = policy(torch.from_numpy(obs)).detach().numpy()
         next_obs, rewards, terminations, truncations, infos = envs.step(actions)

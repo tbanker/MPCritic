@@ -7,10 +7,35 @@ rel_do_mpc_path = os.path.join('..','..')
 sys.path.append(rel_do_mpc_path)
 import do_mpc
 
-from modules.templates import template_linear_model, template_linear_simulator
-from modules.mpcomponents import QuadraticStageCost, QuadraticTerminalCost, LinearDynamics, LinearPolicy
-from modules.mpcritic import MPCritic
+import gymnasium as gym
 
+from modules.templates import template_linear_model, template_linear_simulator, LQREnv
+from modules.mpcomponents import QuadraticStageCost, QuadraticTerminalCost, LinearDynamics, LinearPolicy
+from modules.mpcritic import MPCritic, InputConcat
+from modules.dynamics import Dynamics
+from modules.dpcontrol import DPControl
+
+
+gym.register(
+    id="gymnasium_env/LQR-v0",
+    entry_point=LQREnv,
+    kwargs={'max_timesteps': 1} # designed to randomly initialize state, take action, and then restart environment
+)
+
+def make_env(env_id, seed, idx, capture_video, run_name):
+    def thunk():
+        if capture_video and idx == 0:
+            env = gym.make(env_id, render_mode="rgb_array")
+            env = gym.wrappers.RecordVideo(env, f"videos/{run_name}")
+        else:
+            env = gym.make(env_id)
+        env = gym.wrappers.RecordEpisodeStatistics(env)
+        env.action_space.seed(seed)
+        return env
+
+    return thunk
+
+dummy_envs = gym.vector.SyncVectorEnv([make_env("gymnasium_env/LQR-v0", 0, 0, False, '') for _ in range(1)])
 
 """ User settings: """
 show_animation = True
@@ -19,7 +44,7 @@ np_kwargs = {'dtype' : np.float32}
 
 """ Get configured do-mpc modules: """
 b, n, m = 1, 4, 2
-model = template_linear_model(n, m)
+template_model = template_linear_model(n, m)
 
 A_sim = 0.5 * np.array([[1., 0., 2., 0.],
                         [0., 1., 0., 1.],
@@ -38,27 +63,35 @@ elif m == 2:
 sim_p = {'A' : A_sim,
          'B' : B_sim}
 
-simulator = template_linear_simulator(model, sim_p)
-estimator = do_mpc.estimator.StateFeedback(model)
+simulator = template_linear_simulator(template_model, sim_p)
+estimator = do_mpc.estimator.StateFeedback(template_model)
 
 Q, R = np.diag(np.ones(n, **np_kwargs)), np.diag(np.ones(m, **np_kwargs)) # np.ones((n,n)), np.ones((m,m))
 A_mpc, B_mpc = A_sim.copy(), B_sim.copy() # np.ones((n,n)), np.ones((n,m))
 K = np.ones((m,n), **np_kwargs)
 unc_p = {'A' : [A_mpc],
          'B' : [B_mpc]} # uncertainty scenarios
-mpc_lterm = QuadraticStageCost(n, m, Q, R)
-mpc_mterm = QuadraticTerminalCost(n, Q)
-mpc_model = LinearDynamics(n, m, A_mpc, B_mpc)
-dpc = LinearPolicy(n, m, K)
 
-critic = MPCritic(model, mpc_model, mpc_lterm, mpc_mterm, dpc, unc_p)
+mpc_horizon = 10
+l = QuadraticStageCost(n, m, Q, R)
+V = QuadraticTerminalCost(n, Q)
+f = LinearDynamics(n, m, A_mpc, B_mpc)
+mu = LinearPolicy(n, m, K)
+
+concat_f = InputConcat(f)
+dynamics = Dynamics(dummy_envs, None, dx=concat_f)
+xlim = np.vstack([-3.*np.ones(n), 3.*np.ones(n)])
+ulim = np.vstack([-np.ones(m), np.ones(m)])
+dpcontrol = DPControl(dummy_envs, None, mpc_horizon, dynamics, l, V, mu, xlim=xlim, ulim=ulim)
+
+critic = MPCritic(template_model, dpcontrol, unc_p)
 critic.setup_mpc()
 
 """ Set initial state """
 np.random.seed(99)
 torch.manual_seed(99)
 
-e = np.ones([model.n_x,1])
+e = np.ones([template_model.n_x,1])
 x0 = np.random.uniform(-3*e,3*e) # Values between +3 and +3 for all states
 simulator.x0 = x0
 estimator.x0 = x0

@@ -121,20 +121,21 @@ class PDQuadraticTerminalCost(nn.Module):
 
 if __name__ == '__main__':
     import numpy as np
+    np_kwargs = {'dtype' : np.float32}
 
     b, n, m = 3, 4, 2
     x, u = torch.ones((b,n), **kwargs), torch.ones((b,m), **kwargs)
     x[:,0], u[:,0] = 2., 2.
     z = torch.concat((x,u), dim=-1)
     
-    Q, R = np.ones((n,n)), np.ones((m,m))
+    Q, R = np.ones((n,n), dtype=np_kwargs['dtype']), np.ones((m,m), dtype=np_kwargs['dtype'])
     stage_cost = QuadraticStageCost(n, m, Q, R)
     term_cost = QuadraticTerminalCost(n, Q)
     
-    A, B = np.ones((n,n)), np.ones((n,m))
+    A, B = np.ones((n,n), dtype=np_kwargs['dtype']), np.ones((n,m), dtype=np_kwargs['dtype'])
     dynamics = LinearDynamics(n, m, A, B)
 
-    K = np.ones((m,n))
+    K = np.ones((m,n), dtype=np_kwargs['dtype'])
     policy = LinearPolicy(n, m, K)
 
     res = {
