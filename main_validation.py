@@ -225,16 +225,17 @@ def validation_test(
             if learn_dynamics:
                 critic.dpcontrol.dynamics.train(trainer_kwargs=trainer_kwargs, n_samples=batch_size, batch_size=batch_size)
             if i > n_sysid_batches:
-                if learn_dpcontrol:
-                    critic.dpcontrol.train(trainer_kwargs=trainer_kwargs, n_samples=batch_size, batch_size=batch_size)
                 if learn_mpcritic:
-                    q_targ = batch.rewards + critic(s=batch.next_observations)
+                    with torch.no_grad():
+                        q_targ = batch.rewards + critic(s=batch.next_observations)
                     q_pred = critic(s=batch.observations, a=batch.actions)
                     td_loss = mse(q_pred, q_targ)
 
                     critic_optimizer.zero_grad()
                     td_loss.backward()
                     critic_optimizer.step()
+                if learn_dpcontrol:
+                    critic.dpcontrol.train(trainer_kwargs=trainer_kwargs, n_samples=batch_size, batch_size=batch_size)
 
         results["A_lrn"][i+1] = f.A.detach().numpy()
         results["B_lrn"][i+1] = f.B.detach().numpy()
@@ -246,9 +247,9 @@ def validation_test(
             # when learning P, K, A, and B, approaches optimas around iter 30000 :O
             p_learn = np.concatenate([f.A.detach().numpy(), f.B.detach().numpy()], axis=1)
             print(f"Iter {i}: 'Distance' from...\n \
-                optimal value function: {np.linalg.norm(P_opt - V.P.detach().numpy(), 'fro')}\n \
-                optimal gain: {np.linalg.norm(K_opt - mu.K.detach().numpy(), 'fro')}\n \
-                true model: {np.linalg.norm(p_true - p_learn, 'fro')}")
+                optimal value function: {np.mean(np.abs(P_opt - V.P.detach().numpy()))}\n \
+                optimal gain: {np.mean(np.abs(K_opt - mu.K.detach().numpy()))}\n \
+                true model: {np.mean(np.abs(p_true - p_learn))}")
 
     print(f'P == P^*:\n{np.isclose(P_opt, V.P.detach().numpy())}')
 
@@ -282,7 +283,7 @@ if __name__ == '__main__':
                 # f_unc_scale = 1.0
 
                 seed = seed,
-                batch_size = 256,
+                batch_size = 64, # just to run faster
                 n_batches = 50000,
                 n_sysid_batches = 0,
                 n_samples = 100000,
