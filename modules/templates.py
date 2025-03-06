@@ -9,7 +9,7 @@ from typing import Optional
 import gymnasium as gym
 
 kwargs = {'dtype' : torch.float32,
-            'device' : 'cpu'}
+          'device' : 'cpu'}
 
 def template_linear_model(n, m, symvar_type='MX'):
     """ template_model: Variables / RHS / AUX """
@@ -115,7 +115,7 @@ class LQREnv(gym.Env):
         self.current_step = 0
 
         # Choose the state uniformly at random
-        self._state = self.np_random.uniform(low=-3, high=3, size=(self.n)).astype(np.float32)
+        self._state = self.np_random.uniform(low=-1., high=1., size=(self.n)).astype(np.float32)
 
         observation = self._get_obs()
         info = self._get_info()
@@ -251,7 +251,7 @@ if __name__ == "__main__":
 
     """ Fill replay buffer """
     obs, _ = envs.reset(seed=args.seed)
-    obs = fill_rb(rb, envs, obs, n_transitions=64)
+    obs = fill_rb(rb, envs, obs, n_samples=64)
 
     """ Verify predictions and rewards match """
     s = torch.from_numpy(rb.observations[:64]).squeeze(1)

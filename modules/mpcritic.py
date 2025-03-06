@@ -140,6 +140,13 @@ class MPCritic(nn.Module):
         mpc.set_objective(lterm=lterm, mterm=mterm)
         mpc.set_rterm(u=0.)
 
+        if self.dpcontrol.xlim is not None:
+            mpc.bounds['lower','_x','x'] = self.dpcontrol.xlim[0]
+            mpc.bounds['upper','_x','x'] = self.dpcontrol.xlim[1]
+        if self.dpcontrol.ulim is not None:
+            mpc.bounds['lower','_u','u'] = self.dpcontrol.ulim[0]
+            mpc.bounds['upper','_u','u'] = self.dpcontrol.ulim[1]
+
         mpc.set_uncertainty_values(**self.unc_p)
 
         mpc.setup()
@@ -310,7 +317,7 @@ if __name__ == '__main__':
     K = calc_K(A_env, B_env, Q, R).astype(np_kwargs['dtype'])
     mu = LinearPolicy(n, m, K)
     dpcontrol = DPControl(envs, rb, mpc_horizon, dynamics, l, V, mu)
-    critic = MPCritic(model, dpcontrol, unc_p)
+    critic = MPCritic(template_model, dpcontrol, unc_p)
 
     q_s = critic(s=x)
     q_sa = critic(s=x, a=mu(x))
