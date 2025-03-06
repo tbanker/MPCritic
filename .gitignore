@@ -180,3 +180,4 @@ runs/
 wandb/
 
 *.png
+.DS_Store
