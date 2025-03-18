@@ -6,6 +6,8 @@ import time
 import numpy as np
 import torch
 from torch import optim
+from do_mpc.differentiator import DoMPCDifferentiator, NLPDifferentiator
+import casadi as ca
 
 import gymnasium as gym
 import tyro
@@ -101,7 +103,7 @@ def make_env(env_id, seed, idx, capture_video, run_name):
 
     return thunk
 
-def validation_test(
+def scalability_test(
     learn_dynamics, 
     learn_dpcontrol,
     learn_mpcritic,
@@ -113,7 +115,6 @@ def validation_test(
     n_samples,
     sampling,
     save_results,
-    save_less=False,
 ):
     """ User settings: """
 
@@ -157,103 +158,83 @@ def validation_test(
     P_opt = calc_P(A_env, B_env, Q, R).astype(np_kwargs['dtype'])
 
     """ Model setup """
-    A_mpc = np.random.normal(size=(n,n)).astype(np_kwargs['dtype']) if learn_dynamics else A_env.copy()
-    B_mpc = np.random.normal(size=(n,m)).astype(np_kwargs['dtype']) if learn_dynamics else B_env.copy()
+    A_mpc = A_env.copy()
+    B_mpc = B_env.copy()
     Q_mpc, R_mpc = Q.copy(), R.copy()
-    K = np.random.normal(size=(m,n)).astype(np_kwargs['dtype']) if learn_dpcontrol else K_opt
-    if pd_V:
-        L = np.random.normal(size=(n,n)).astype(np_kwargs['dtype'])
-    else:
-        P = np.random.uniform(size=(n,n)).astype(np_kwargs['dtype']) if learn_mpcritic else P_opt.copy()
+    K = K_opt
+    P = P_opt.copy()
 
-    mpc_horizon = 1
+    mpc_horizon = 3
     lr = 0.001
-    V = PDQuadraticTerminalCost(n, L) if pd_V else QuadraticTerminalCost(n, P)
+    V = QuadraticTerminalCost(n, P)
     l = QuadraticStageCost(n, m, Q_mpc, R_mpc)
     f = LinearDynamics(n, m, A_mpc, B_mpc)
     mu = LinearPolicy(n, m, K)
 
     concat_f = InputConcat(f)
-    dynamics = Dynamics(envs, rb, dx=concat_f, lr=lr, opt="AdamW")
+    dynamics = Dynamics(envs, rb, dx=concat_f, lr=lr)
 
-    dpcontrol = DPControl(envs, rb, mpc_horizon, dynamics, l, V, mu, lr=lr, opt="AdamW")
+    # dpcontrol = DPControl(envs, rb, mpc_horizon, dynamics, l, V, mu, lr=lr)
+    xlim = np.vstack([-3.*np.ones(n), 3.*np.ones(n)])
+    ulim = np.vstack([-np.ones(m), np.ones(m)])
+    dpcontrol = DPControl(envs, rb, mpc_horizon, dynamics, l, V, mu, lr=lr, xlim=xlim, ulim=ulim)
 
     template_model = template_linear_model(n, m)
     unc_p = {'A' : [A_mpc],
             'B' : [B_mpc]} # 1 uncertainty scenario considered
     critic = MPCritic(template_model, dpcontrol, unc_p)
     critic.setup_mpc()
+    # nlp_diff = DoMPCDifferentiator(critic.mpc) # Xfunction input arguments must be purely symbolic. Argument 0(i0) is not symbolic.
 
     """ Learning Q-function """
     critic.requires_grad_(True)
-    mse = torch.nn.MSELoss(reduction='mean')
-    critic_optimizer = optim.AdamW(list(V.parameters()), lr=lr)
-    p_true = np.concatenate([A_env, B_env], axis=1)
+    critic_params = list(V.parameters())+list(l.parameters())+list(f.parameters())
+    critic_optimizer = optim.Adam(critic_params, lr=lr)
 
     results = {
         "exp_kwargs" : exp_kwargs,
-        "A_env" : A_env,
-        "B_env" : B_env,
+        "A" : A_env,
+        "B" : B_env,
         "Q" : Q,
         "R" : R,
-        "P_opt" : P_opt,
-        "K_opt" : K_opt,
-        "A_lrn" : [],
-        "B_lrn" : [],
-        "K_lrn" : [],
-        "P_lrn" : [],
     }
-
-    results["A_lrn"].append(f.A.clone().detach().numpy())
-    results["B_lrn"].append(f.B.clone().detach().numpy())
-    results["K_lrn"].append(mu.K.clone().detach().numpy())
-    results["P_lrn"].append(V.P.clone().detach().numpy())
 
     obs, _ = envs.reset(seed=args.seed)
     obs = fill_rb(rb, envs, obs, policy=None, sampling=sampling, n_samples=n_samples)
 
-    for i in range(1,n_batches+1):
+    for i in range(n_batches):
         
         batch = rb.sample(args.batch_size)
+        critic_optimizer.zero_grad()
 
-        with HiddenPrints():
-            if learn_dynamics:
-                critic.dpcontrol.dynamics.train(trainer_kwargs=trainer_kwargs, n_samples=batch_size, batch_size=batch_size)
-            if i > n_sysid_batches:
-                if learn_mpcritic:
-                    with torch.no_grad():
-                        q_targ = batch.rewards + critic(s=batch.next_observations)
-                    q_pred = critic(s=batch.observations, a=batch.actions)
-                    td_loss = mse(q_pred, q_targ)
+        input = batch.observations
+        start = time.time()
+        output = critic(input)
+        forward_time = time.time() - start
 
-                    critic_optimizer.zero_grad()
-                    td_loss.backward()
-                    critic_optimizer.step()
-                if learn_dpcontrol:
-                    critic.dpcontrol.train(trainer_kwargs=trainer_kwargs, n_samples=batch_size, batch_size=batch_size)                  
+        loss = output.sum()
+        start = time.time()
+        loss.backward()
+        backward_time = time.time() - start
 
-        if (i % 100) == 0:
-            p_learn = np.concatenate([f.A.detach().numpy(), f.B.detach().numpy()], axis=1)
-            print(f"Iter {i}: 'Distance' from...\n \
-                optimal value function: {np.mean(np.abs(P_opt - V.P.detach().numpy()))}\n \
-                optimal gain: {np.mean(np.abs(K_opt - mu.K.detach().numpy()))}\n \
-                true model: {np.mean(np.abs(p_true - p_learn))}")
-            if save_less:
-                results["A_lrn"].append(f.A.clone().detach().numpy())
-                results["B_lrn"].append(f.B.clone().detach().numpy())
-                results["K_lrn"].append(mu.K.clone().detach().numpy())
-                results["P_lrn"].append(V.P.clone().detach().numpy())
+        # time MPC
+        for i in range(args.batch_size):
+            input = batch.observations[[i]].mT.numpy()
+            start = time.time()
+            critic.mpc.make_step(input)
+            forward_time = time.time() - start
 
-    print(f'P == P^*:\n{np.isclose(P_opt, V.P.detach().numpy())}')
+            x_num = [critic.mpc.opt_x_num['_x', k, 0, 0]*critic.mpc._x_scaling for k in range(mpc_horizon)]
+            u_num = [critic.mpc.opt_x_num['_u', k, 0]*critic.mpc._u_scaling for k in range(mpc_horizon)]
+            lam_x_num = critic.mpc.lam_x_num
+            lam_g_num = critic.mpc.lam_g_num
+
+            print("So you've made it this far....")
+
 
     if save_results:
-        results["A_lrn"] = np.array(results["A_lrn"])
-        results["B_lrn"] = np.array(results["B_lrn"])
-        results["K_lrn"] = np.array(results["K_lrn"])
-        results["P_lrn"] = np.array(results["P_lrn"])
-
         file_name = f"seed={seed}.pt"
-        save_dir = os.path.join(os.path.dirname(__file__), "runs", "validation", f"{date.today()}_n={n}_m={m}_f={learn_dynamics}_mu={learn_dpcontrol}_V={learn_mpcritic}_PD={pd_V}")
+        save_dir = os.path.join(os.path.dirname(__file__), "runs", "scalablity", f"{date.today()}_n={n}_m={m}_f={learn_dynamics}_mu={learn_dpcontrol}_V={learn_mpcritic}_PD={pd_V}")
         file_path = os.path.join(save_dir, file_name)
         os.makedirs(save_dir, exist_ok=True)
 
@@ -303,7 +284,7 @@ if __name__ == '__main__':
             )
             
             for exp_dict in exp_dicts.values():
-                validation_test(
+                scalability_test(
                     learn_dynamics = exp_dict['learn_dynamics'],
                     learn_dpcontrol = exp_dict['learn_dpcontrol'],
                     learn_mpcritic = exp_dict['learn_mpcritic'],
@@ -319,4 +300,3 @@ if __name__ == '__main__':
                     save_results = True,
                     save_less=True,
                 )
-

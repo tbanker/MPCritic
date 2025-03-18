@@ -15,6 +15,35 @@ def calc_K(A, B, Q, R):
     K = np.linalg.solve(LHS, RHS)
     return K
 
+def stable(A):
+    Re_eigvals_A = np.linalg.eigvals(A).real
+    if np.all(np.abs(Re_eigvals_A) < 1):
+        print("Open-loop Asymptotic stable")
+    elif np.all(np.abs(Re_eigvals_A) <= 1) and np.any(Re_eigvals_A == 1):
+        print("Open-loop Lyapunov stable")
+    else:
+        print("Open-loop Unstable")
+
+def controllable(A, B):
+    n = A.shape[0]
+    Re_eigvals_A = np.linalg.eigvals(A).real
+
+    eig_rank = np.zeros_like(Re_eigvals_A)
+    for i, eigval in enumerate(Re_eigvals_A):
+        M = np.concatenate([eigval * np.eye(n) - A, B], axis=1)
+        eig_rank[i] = np.linalg.matrix_rank(M)
+    if np.all(eig_rank == n):
+        print("Controllable")
+
+    else:
+        ge1_eigvals_A = Re_eigvals_A[np.abs(Re_eigvals_A) >= 1.]
+        eig_rank = np.zeros_like(ge1_eigvals_A)
+        for i, eigval in enumerate(ge1_eigvals_A):
+            M = np.concatenate([eigval * np.eye(n) - A, B], axis=1)
+            eig_rank[i] = np.linalg.matrix_rank(M)
+        if np.all(eig_rank == n):
+            print("Stabilizable")
+
 def fill_rb(rb, envs, obs, policy=None, sampling="Normal", n_samples=1000):
     """ Add samples to RB following Clean-RL  """
     for _ in range(n_samples):
