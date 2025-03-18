@@ -98,34 +98,3 @@ input('Press any key to exit.')
 # Store results:
 if store_results:
     do_mpc.data.save_results([mpc, simulator], 'LQR')
-
-# # Assume x, obj, and g are symbolic MX variables (from your setup)
-# x = ca.MX.sym('x', 3)  # Example: 3-dimensional x (adjust dimensions as needed)
-# obj = ca.MX.sym('obj')  # Example: scalar objective function
-# g = ca.MX.sym('g', 2)  # Example: 2-dimensional constraint (adjust dimensions as needed)
-
-# # Multipliers corresponding to bounds on x
-# lam_x = ca.MX.sym("lam_x", x.shape[0])  # Same size as x (here assumed to be 3)
-# # Multipliers corresponding to bounds on g(x)
-# lam_g = ca.MX.sym("lam_g", g.shape[0])  # Same size as g (here assumed to be 2)
-
-# # Lagrangian formulation
-# Lagr = obj + ca.dot(lam_g, g) + ca.dot(lam_x, x)
-
-# # Gradient of the Lagrangian with respect to x
-# grad_Lagr = ca.gradient(Lagr, x)
-
-# # Create a function for the gradient (taking x, lam_x, and lam_g as inputs)
-# grad_Lagr_fun = ca.Function('grad_Lagr_fun', [x, lam_x, lam_g], [grad_Lagr])
-
-# # Example values for x, lam_x, and lam_g
-# # These should be numerical values for evaluation
-# x_val = [1.0, 2.0, 3.0]  # Example values for x (3-dimensional)
-# lam_x_val = [0.5, 0.5, 0.5]  # Example values for lam_x (3-dimensional)
-# lam_g_val = [0.5, 0.5]  # Example values for lam_g (2-dimensional)
-
-# # Evaluate the gradient
-# grad_Lagr_val = grad_Lagr_fun(x_val, lam_x_val, lam_g_val)
-
-# # Print the result
-# print("Gradient of the Lagrangian:", grad_Lagr_val)

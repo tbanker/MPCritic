@@ -177,18 +177,18 @@ def scalability_test(
     # dpcontrol = DPControl(envs, rb, mpc_horizon, dynamics, l, V, mu, lr=lr)
     xlim = np.vstack([-3.*np.ones(n), 3.*np.ones(n)])
     ulim = np.vstack([-np.ones(m), np.ones(m)])
-    dpcontrol = DPControl(envs, rb, mpc_horizon, dynamics, l, V, mu, lr=lr, xlim=xlim, ulim=ulim)
+    dpcontrol = DPControl(envs, rb=rb, dynamics=dynamics, V=V, l=l, mu=mu, lr=lr, xlim=xlim, ulim=ulim, opt="AdamW")
 
     template_model = template_linear_model(n, m)
     unc_p = {'A' : [A_mpc],
-            'B' : [B_mpc]} # 1 uncertainty scenario considered
-    critic = MPCritic(template_model, dpcontrol, unc_p)
+             'B' : [B_mpc]} # 1 uncertainty scenario considered
+    critic = MPCritic(dpcontrol, unc_p=unc_p)
     critic.setup_mpc()
     # nlp_diff = DoMPCDifferentiator(critic.mpc) # Xfunction input arguments must be purely symbolic. Argument 0(i0) is not symbolic.
 
     """ Learning Q-function """
     critic.requires_grad_(True)
-    critic_params = list(V.parameters())+list(l.parameters())+list(f.parameters())
+    critic_params = list(V.parameters())+list(f.parameters())
     critic_optimizer = optim.Adam(critic_params, lr=lr)
 
     results = {
@@ -224,10 +224,10 @@ def scalability_test(
             critic.mpc.make_step(input)
             forward_time = time.time() - start
 
-            x_num = [critic.mpc.opt_x_num['_x', k, 0, 0]*critic.mpc._x_scaling for k in range(mpc_horizon)]
-            u_num = [critic.mpc.opt_x_num['_u', k, 0]*critic.mpc._u_scaling for k in range(mpc_horizon)]
-            lam_x_num = critic.mpc.lam_x_num
-            lam_g_num = critic.mpc.lam_g_num
+            # x_num = [critic.mpc.opt_x_num['_x', k, 0, 0]*critic.mpc._x_scaling for k in range(mpc_horizon)]
+            # u_num = [critic.mpc.opt_x_num['_u', k, 0]*critic.mpc._u_scaling for k in range(mpc_horizon)]
+            # lam_x_num = critic.mpc.lam_x_num
+            # lam_g_num = critic.mpc.lam_g_num
 
             print("So you've made it this far....")
 
@@ -298,5 +298,4 @@ if __name__ == '__main__':
                     sampling = "Uniform",
 
                     save_results = True,
-                    save_less=True,
                 )

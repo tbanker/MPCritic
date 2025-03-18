@@ -176,15 +176,11 @@ def validation_test(
     concat_f = InputConcat(f)
     dynamics = Dynamics(envs, rb, dx=concat_f, lr=lr, opt="AdamW")
 
-<<<<<<< HEAD
-    dpcontrol = DPControl(envs, rb, mpc_horizon, dynamics, l, V, mu, lr=lr, opt="AdamW")
-=======
-    dpcontrol = DPControl(envs, rb=rb, dynamics=dynamics, V=V, l=l, mu=mu, lr=lr)
->>>>>>> origin/main
+    dpcontrol = DPControl(envs, rb=rb, dynamics=dynamics, V=V, l=l, mu=mu, lr=lr, opt="AdamW")
 
     template_model = template_linear_model(n, m)
     unc_p = {'A' : [A_mpc],
-            'B' : [B_mpc]} # 1 uncertainty scenario considered
+             'B' : [B_mpc]} # 1 uncertainty scenario considered
     critic = MPCritic(dpcontrol, unc_p=unc_p)
     critic.setup_mpc()
 
@@ -305,7 +301,8 @@ if __name__ == '__main__':
                         'R' : 1000*np.diag(np.ones(B.shape[1], **np_kwargs)),
                         'max_timesteps': 1} # designed to randomly initialize state, take action, and then restart environment
             )
-            
+
+
             for exp_dict in exp_dicts.values():
                 validation_test(
                     learn_dynamics = exp_dict['learn_dynamics'],
