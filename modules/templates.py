@@ -85,8 +85,6 @@ def template_linear_simulator(model, sim_p):
 
 class LQREnv(gym.Env):
     def __init__(self,
-            n=4,
-            m=2,
             A=0.5 * np.array([[1., 0., 2., 0.],
                               [0., 1., 0., 1.],
                               [0., 0., 1., 2.],
@@ -99,7 +97,9 @@ class LQREnv(gym.Env):
             R=np.diag(np.ones(2, np.float32)),
             max_timesteps=10
         ):
-        
+
+        n = A.shape[0]
+        m = B.shape[1]
         assert (A.shape == (n,n)) and (B.shape == (n,m))
         assert (Q.shape == (n,n)) and (R.shape == (m,m))
         self.n = n

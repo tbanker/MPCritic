@@ -68,7 +68,7 @@ class MPCritic(nn.Module):
                     #  'nl_cons_single_slack' : False,
                     #  'cons_check_colloc_points' : True,
                         'store_full_solution': True,
-                    #  'store_lagr_multiplier' : True,
+                        'store_lagr_multiplier' : True,
                     #  'store_solver_stats' : []
                         'nlpsol_opts': {'ipopt.linear_solver': 'mumps'}, #LQR fails w/ MA27
                         } if mpc_settings == None else mpc_settings
