@@ -11,6 +11,9 @@ from neuromancer.dataset import DictDataset
 from neuromancer.system import Node, System
 from neuromancer.problem import Problem
 
+from modules.templates import template_model, template_linear_model
+from modules.dpcontrol import DPControl
+
 np_kwargs = {'dtype' : np.float32}
 kwargs = {'dtype' : torch.float32,
           'device' : 'cpu'}
@@ -27,10 +30,9 @@ class InputConcat(torch.nn.Module):
         return self.module(z)
 
 class MPCritic(nn.Module):
-    def __init__(self, template_model, dpcontrol, unc_p=None, mpc_settings=None):
+    def __init__(self, dpcontrol, unc_p=None, mpc_settings=None):
         super().__init__()
 
-        self.template_model = template_model
         self.dpcontrol = dpcontrol
 
         # Configure network
@@ -126,13 +128,18 @@ class MPCritic(nn.Module):
     
     def setup_mpc(self):
         """ setup MPC problem """
-        mpc = do_mpc.controller.MPC(self.template_model)
+
+        # Convert torch model to do-mpc-friendly model
+        self.dx_dompc = template_model(self.dx_l4c, self.dpcontrol.nx, self.dpcontrol.nu) 
+
+        # Instantiate MPC
+        mpc = do_mpc.controller.MPC(self.dx_dompc)
         mpc.settings.__dict__.update(**self.mpc_settings)
         mpc.settings.supress_ipopt_output() # please be quiet
 
-        z = ca.transpose(ca.vertcat(self.template_model._x, self.template_model._u))
+        z = ca.transpose(ca.vertcat(self.dx_dompc._x, self.dx_dompc._u))
         lterm = self.l_l4c.forward(z)
-        x = ca.transpose(self.template_model._x)
+        x = ca.transpose(self.dx_dompc._x)
         mterm = self.V_l4c.forward(x)
         # forward to 'build' l4c_model, required before L4CasADi.update()
         self.dx_l4c(z)
@@ -147,7 +154,7 @@ class MPCritic(nn.Module):
             mpc.bounds['lower','_u','u'] = self.dpcontrol.ulim[0]
             mpc.bounds['upper','_u','u'] = self.dpcontrol.ulim[1]
 
-        mpc.set_uncertainty_values(**self.unc_p)
+        # mpc.set_uncertainty_values(**self.unc_p) # save for later
 
         mpc.setup()
 

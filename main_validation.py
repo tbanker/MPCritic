@@ -181,12 +181,12 @@ def validation_test(
     concat_f = InputConcat(f)
     dynamics = Dynamics(envs, rb, dx=concat_f, lr=lr)
 
-    dpcontrol = DPControl(envs, rb, mpc_horizon, dynamics, l, V, mu, lr=lr)
+    dpcontrol = DPControl(envs, rb=rb, dynamics=dynamics, V=V, l=l, mu=mu, lr=lr)
 
     template_model = template_linear_model(n, m)
     unc_p = {'A' : [A_mpc],
             'B' : [B_mpc]} # 1 uncertainty scenario considered
-    critic = MPCritic(template_model, dpcontrol, unc_p)
+    critic = MPCritic(dpcontrol, unc_p=unc_p)
     critic.setup_mpc()
 
     """ Learning Q-function """

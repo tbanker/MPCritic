@@ -76,8 +76,8 @@ class LinearPolicy(nn.Module):
 class PDQuadraticStageCost(nn.Module):
     def __init__(self, n, m, Q=None, R=None, epsilon=0.001):
         super().__init__()
-        N = torch.rand((n,n), **kwargs) if N is None else torch.from_numpy(N)
-        M = torch.rand((m,m), **kwargs) if M is None else torch.from_numpy(M)
+        N = torch.rand((n,n), **kwargs) 
+        M = torch.rand((m,m), **kwargs)
         self.n = n
         self.m = m
         self.N = nn.Parameter(N)
