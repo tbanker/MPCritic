@@ -35,6 +35,7 @@ def make_env(env_id, seed, idx, capture_video, run_name):
 
     return thunk
 
+n_envs = 1
 dummy_envs = gym.vector.SyncVectorEnv([make_env("gymnasium_env/LQR-v0", 0, 0, False, '') for _ in range(1)])
 
 """ User settings: """
@@ -79,12 +80,12 @@ f = LinearDynamics(n, m, A_mpc, B_mpc)
 mu = LinearPolicy(n, m, K)
 
 concat_f = InputConcat(f)
-dynamics = Dynamics(dummy_envs, None, dx=concat_f)
+dynamics = Dynamics(dummy_envs, rb=None, dx=concat_f)
 xlim = np.vstack([-3.*np.ones(n), 3.*np.ones(n)])
 ulim = np.vstack([-np.ones(m), np.ones(m)])
-dpcontrol = DPControl(dummy_envs, None, mpc_horizon, dynamics, l, V, mu, xlim=xlim, ulim=ulim)
+dpcontrol = DPControl(dummy_envs, H=10, rb=None, dynamics=dynamics, l=l, V=V, mu=mu, xlim=xlim, ulim=ulim)
 
-critic = MPCritic(template_model, dpcontrol, unc_p)
+critic = MPCritic(dpcontrol, unc_p)
 critic.setup_mpc()
 
 """ Set initial state """

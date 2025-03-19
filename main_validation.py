@@ -12,7 +12,7 @@ import tyro
 from stable_baselines3.common.buffers import ReplayBuffer
 from dataclasses import dataclass
 
-from modules.templates import template_linear_model, LQREnv
+from modules.templates import LQREnv
 from modules.mpcomponents import QuadraticStageCost, QuadraticTerminalCost, PDQuadraticTerminalCost, LinearDynamics, LinearPolicy
 from modules.mpcritic import MPCritic, InputConcat
 from modules.dynamics import Dynamics
@@ -166,7 +166,7 @@ def validation_test(
     else:
         P = np.random.uniform(size=(n,n)).astype(np_kwargs['dtype']) if learn_mpcritic else P_opt.copy()
 
-    mpc_horizon = 1
+    H = 1
     lr = 0.001
     V = PDQuadraticTerminalCost(n, L) if pd_V else QuadraticTerminalCost(n, P)
     l = QuadraticStageCost(n, m, Q_mpc, R_mpc)
@@ -176,9 +176,8 @@ def validation_test(
     concat_f = InputConcat(f)
     dynamics = Dynamics(envs, rb, dx=concat_f, lr=lr, opt="AdamW")
 
-    dpcontrol = DPControl(envs, rb=rb, dynamics=dynamics, V=V, l=l, mu=mu, lr=lr, opt="AdamW")
+    dpcontrol = DPControl(envs, H=H, rb=rb, dynamics=dynamics, V=V, l=l, mu=mu, lr=lr, opt="AdamW")
 
-    template_model = template_linear_model(n, m)
     unc_p = {'A' : [A_mpc],
              'B' : [B_mpc]} # 1 uncertainty scenario considered
     critic = MPCritic(dpcontrol, unc_p=unc_p)

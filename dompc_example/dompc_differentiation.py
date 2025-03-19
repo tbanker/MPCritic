@@ -1,3 +1,4 @@
+import time
 import numpy as np
 import matplotlib.pyplot as plt
 import casadi as ca
@@ -73,8 +74,15 @@ Run MPC main loop:
 """
 
 for k in range(2):
+    start = time.time()
     u0 = mpc.make_step(x0)
+    forward_time = time.time() - start
+
+    start = time.time()
     dx_dp_num, dlam_dp_num = mpc_diff.differentiate()
+    backward_time = time.time() - start
+
+    print(f"Forward: {forward_time}\n Backward: {backward_time}")
 
     nlp_sol = mpc_diff._get_do_mpc_nlp_sol()
     x_num = nlp_sol['x']
