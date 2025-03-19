@@ -46,12 +46,12 @@ class DPControl(nn.Module):
         super().__init__()
 
         self.env = env
-        self.rb = rb if rb != None else ReplayBuffer(1e6,
+        self.rb = rb if rb != None else ReplayBuffer(int(1e6),
                                                 env.single_observation_space,
                                                 env.single_action_space,
                                                 device=kwargs['device'],
                                                 handle_timeout_termination=False,
-                                                n_envs=n_envs
+                                                n_envs=env.num_envs
                                             )
 
         # Configure network
@@ -175,7 +175,7 @@ if __name__ == "__main__":
 
     from dynamics import Dynamics
     from mpcomponents import QuadraticStageCost, QuadraticTerminalCost, LinearDynamics, LinearPolicy
-    from templates import template_linear_model, LQREnv
+    from templates import LQREnv
     from utils import calc_K, calc_P, fill_rb
 
     """ CleanRL setup """

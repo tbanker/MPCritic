@@ -9,7 +9,7 @@ sys.path.append(rel_do_mpc_path)
 import do_mpc
 from scipy.linalg import solve_discrete_are
 
-def template_linear_model(symvar_type='SX'):
+def template_LQR_model(symvar_type='SX'):
     """
     --------------------------------------------------------------------------
     template_model: Variables / RHS / AUX

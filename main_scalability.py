@@ -14,8 +14,8 @@ import tyro
 from stable_baselines3.common.buffers import ReplayBuffer
 from dataclasses import dataclass
 
-from modules.templates import template_linear_model, LQREnv
-from modules.mpcomponents import QuadraticStageCost, QuadraticTerminalCost, PDQuadraticTerminalCost, LinearDynamics, LinearPolicy
+from modules.templates import LQREnv, template_LQR_model, template_conLQR_mpc
+from modules.mpcomponents import QuadraticStageCost, QuadraticTerminalCost, LinearDynamics, LinearPolicy
 from modules.mpcritic import MPCritic, InputConcat
 from modules.dynamics import Dynamics
 from modules.dpcontrol import DPControl
@@ -104,14 +104,10 @@ def make_env(env_id, seed, idx, capture_video, run_name):
     return thunk
 
 def scalability_test(
-    learn_dynamics, 
-    learn_dpcontrol,
-    learn_mpcritic,
-    pd_V,
+    set_initial_guess,
     seed,
     batch_size,
     n_batches,
-    n_sysid_batches,
     n_samples,
     sampling,
     save_results,
@@ -119,7 +115,7 @@ def scalability_test(
     """ User settings: """
 
     exp_kwargs = {
-        'seed':seed, 'batch_size':batch_size, 'n_batches':n_batches, 'n_sysid_batches':n_sysid_batches, 'n_samples':n_samples, 'sampling':sampling, 'pd_V':pd_V #, 'f_unc_scale':f_unc_scale
+        'seed':seed, 'batch_size':batch_size, 'n_batches':n_batches, 'n_samples':n_samples, 'sampling':sampling,
         }
     
     trainer_kwargs = {
@@ -164,7 +160,7 @@ def scalability_test(
     K = K_opt
     P = P_opt.copy()
 
-    mpc_horizon = 3
+    H = 1
     lr = 0.001
     V = QuadraticTerminalCost(n, P)
     l = QuadraticStageCost(n, m, Q_mpc, R_mpc)
@@ -175,16 +171,15 @@ def scalability_test(
     dynamics = Dynamics(envs, rb, dx=concat_f, lr=lr)
 
     # dpcontrol = DPControl(envs, rb, mpc_horizon, dynamics, l, V, mu, lr=lr)
-    xlim = np.vstack([-3.*np.ones(n), 3.*np.ones(n)])
-    ulim = np.vstack([-np.ones(m), np.ones(m)])
-    dpcontrol = DPControl(envs, rb=rb, dynamics=dynamics, V=V, l=l, mu=mu, lr=lr, xlim=xlim, ulim=ulim, opt="AdamW")
+    xlim = np.vstack([-np.inf*np.ones(n), np.inf*np.ones(n)])
+    ulim = np.vstack([-np.inf*np.ones(m), np.inf*np.ones(m)])
+    dpcontrol = DPControl(envs, H=H, rb=rb, dynamics=dynamics, V=V, l=l, mu=mu, lr=lr, xlim=xlim, ulim=ulim, opt="AdamW")
+    critic = MPCritic(dpcontrol)
 
-    template_model = template_linear_model(n, m)
-    unc_p = {'A' : [A_mpc],
-             'B' : [B_mpc]} # 1 uncertainty scenario considered
-    critic = MPCritic(dpcontrol, unc_p=unc_p)
-    critic.setup_mpc()
-    # nlp_diff = DoMPCDifferentiator(critic.mpc) # Xfunction input arguments must be purely symbolic. Argument 0(i0) is not symbolic.
+    unc_p = {'A' : A_mpc,
+             'B' : B_mpc,
+             'P' : P_opt}
+    model = template_LQR_model(n, m)
 
     """ Learning Q-function """
     critic.requires_grad_(True)
@@ -197,6 +192,10 @@ def scalability_test(
         "B" : B_env,
         "Q" : Q,
         "R" : R,
+        "mu_fwd" : [],
+        "mu_bkwd" : [],
+        "mpc_fwd" : [],
+        "mpc_bkwd" : [],
     }
 
     obs, _ = envs.reset(seed=args.seed)
@@ -209,32 +208,53 @@ def scalability_test(
 
         input = batch.observations
         start = time.time()
-        output = critic(input)
-        forward_time = time.time() - start
+        output = critic.dpcontrol.mu(input) # critic(input)
+        mu_fwd = time.time() - start
+        if torch.any(output < torch.tensor(ulim[0])) or torch.any(output > torch.tensor(ulim[1])):
+            raise ValueError("Outside of constraints; unfair comparison")
 
         loss = output.sum()
         start = time.time()
         loss.backward()
-        backward_time = time.time() - start
+        mu_bkwd = time.time() - start
+        print(f"mu forward: {mu_fwd}\nmu backward: {mu_bkwd}")
 
         # time MPC
+        mpc_fwd, mpc_bkwd = 0, 0
         for i in range(args.batch_size):
-            input = batch.observations[[i]].mT.numpy()
-            start = time.time()
-            critic.mpc.make_step(input)
-            forward_time = time.time() - start
+            mpc = template_conLQR_mpc(model, H=H, mpc_p=unc_p, xlim=xlim, ulim=ulim)
+            mpc_diff = DoMPCDifferentiator(mpc)
 
-            # x_num = [critic.mpc.opt_x_num['_x', k, 0, 0]*critic.mpc._x_scaling for k in range(mpc_horizon)]
-            # u_num = [critic.mpc.opt_x_num['_u', k, 0]*critic.mpc._u_scaling for k in range(mpc_horizon)]
-            # lam_x_num = critic.mpc.lam_x_num
-            # lam_g_num = critic.mpc.lam_g_num
+            x0 = batch.observations[[i]].mT.numpy()
+            mpc.x0 = x0
 
-            print("So you've made it this far....")
+            if set_initial_guess:
+                mpc.set_initial_guess()
 
+            with HiddenPrints():
+                input = x0
+                start = time.time()
+                mpc.make_step(input)
+                mpc_fwd += time.time() - start
+
+                start = time.time()
+                dx_dp_num, dlam_dp_num = mpc_diff.differentiate()
+                mpc_bkwd += time.time() - start
+        print(f"mpc forward: {mpc_fwd}\nmpc backward: {mpc_bkwd}")
+
+        results["mu_fwd"].append(f.A.clone().detach().numpy())
+        results["mu_bkwd"].append(f.B.clone().detach().numpy())
+        results["mpc_fwd"].append(mu.K.clone().detach().numpy())
+        results["mpc_bkwd"].append(V.P.clone().detach().numpy())
 
     if save_results:
+        results["mu_fwd"] = np.array(results["mu_fwd"])
+        results["mu_bkwd"] = np.array(results["mu_bkwd"])
+        results["mpc_fwd"] = np.array(results["mpc_fwd"])
+        results["mpc_bkwd"] = np.array(results["mpc_bkwd"])
+
         file_name = f"seed={seed}.pt"
-        save_dir = os.path.join(os.path.dirname(__file__), "runs", "scalablity", f"{date.today()}_n={n}_m={m}_f={learn_dynamics}_mu={learn_dpcontrol}_V={learn_mpcritic}_PD={pd_V}")
+        save_dir = os.path.join(os.path.dirname(__file__), "runs", "scalablity", f"{date.today()}_n={n}_m={m}_set_initial_guess={set_initial_guess}")
         file_path = os.path.join(save_dir, file_name)
         os.makedirs(save_dir, exist_ok=True)
 
@@ -244,14 +264,10 @@ if __name__ == '__main__':
     from modules.utils import stable, controllable
     from scipy.linalg import block_diag
 
-    seeds = list(range(10))
+    seeds = list(range(1))
     exp_dicts = {
-        # 'learn_f' :         {'learn_dynamics':True,  'learn_dpcontrol':False, 'learn_mpcritic':False, 'pd_V':False, },
-        # 'learn_mu' :        {'learn_dynamics':False, 'learn_dpcontrol':True,  'learn_mpcritic':False, 'pd_V':False, },
-        # 'learn_V' :         {'learn_dynamics':False, 'learn_dpcontrol':False, 'learn_mpcritic':True,  'pd_V':False, },
-        # 'learn_V_pd' :      {'learn_dynamics':False, 'learn_dpcontrol':False, 'learn_mpcritic':True,  'pd_V':True, },
-        # 'learn_f_mu_V' :    {'learn_dynamics':True,  'learn_dpcontrol':True,  'learn_mpcritic':True,  'pd_V':False, },
-        'learn_f_mu_V_pd' : {'learn_dynamics':True,  'learn_dpcontrol':True,  'learn_mpcritic':True,  'pd_V':True, },
+        'set_initial_guess' : {'set_initial_guess':True},
+        'no_initial_guess' : {'set_initial_guess':False},
     }
 
     n_list = [4**i for i in range(1,4)] + [4]*2 + [4**i for i in range(2,4)]
@@ -270,6 +286,8 @@ if __name__ == '__main__':
             else:
                 B = np.diag(np.ones(m))
             A, B = A.astype(np_kwargs['dtype']), B.astype(np_kwargs['dtype'])
+            
+            print(f"A : {A.shape}, B : {B.shape}")
             stable(A)
             controllable(A, B)
 
@@ -285,16 +303,12 @@ if __name__ == '__main__':
             
             for exp_dict in exp_dicts.values():
                 scalability_test(
-                    learn_dynamics = exp_dict['learn_dynamics'],
-                    learn_dpcontrol = exp_dict['learn_dpcontrol'],
-                    learn_mpcritic = exp_dict['learn_mpcritic'],
-                    pd_V = exp_dict['pd_V'],
+                    set_initial_guess = {exp_dict['set_initial_guess']},
 
                     seed = seed,
                     batch_size = 256,
-                    n_batches = 100000,
-                    n_sysid_batches = 0,
-                    n_samples = 100000,
+                    n_batches = 1,
+                    n_samples = 256,
                     sampling = "Uniform",
 
                     save_results = True,

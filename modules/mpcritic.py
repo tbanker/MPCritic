@@ -11,7 +11,7 @@ from neuromancer.dataset import DictDataset
 from neuromancer.system import Node, System
 from neuromancer.problem import Problem
 
-from modules.templates import template_model, template_linear_model
+from modules.templates import template_model
 from modules.dpcontrol import DPControl
 
 np_kwargs = {'dtype' : np.float32}
@@ -188,7 +188,7 @@ if __name__ == '__main__':
     from dynamics import Dynamics
     from dpcontrol import DPControl
     from mpcomponents import QuadraticStageCost, QuadraticTerminalCost, LinearDynamics, LinearPolicy
-    from templates import template_linear_model, LQREnv
+    from templates import LQREnv
     from utils import calc_K, calc_P
 
     """ User settings: """
@@ -299,12 +299,11 @@ if __name__ == '__main__':
     concat_f = InputConcat(f)
     dynamics = Dynamics(envs, rb, dx=concat_f)
 
-    dpcontrol = DPControl(envs, rb, mpc_horizon, dynamics, l, V, mu)
+    dpcontrol = DPControl(envs, rb=rb, dynamics=dynamics, V=V, l=l, mu=mu)
 
-    template_model = template_linear_model(n, m)
     unc_p = {'A' : [A_env],
              'B' : [A_env]}
-    critic = MPCritic(template_model, dpcontrol, unc_p)
+    critic = MPCritic(dpcontrol, unc_p=unc_p)
 
     """ Different outputs for given action """
     obs, _ = envs.reset()
@@ -323,8 +322,8 @@ if __name__ == '__main__':
     """ Same outputs for optimal critic Q^* and value function V^* """
     K = calc_K(A_env, B_env, Q, R).astype(np_kwargs['dtype'])
     mu = LinearPolicy(n, m, K)
-    dpcontrol = DPControl(envs, rb, mpc_horizon, dynamics, l, V, mu)
-    critic = MPCritic(template_model, dpcontrol, unc_p)
+    dpcontrol = DPControl(envs, rb=rb, dynamics=dynamics, V=V, l=l, mu=mu)
+    critic = MPCritic(dpcontrol, unc_p)
 
     q_s = critic(s=x)
     q_sa = critic(s=x, a=mu(x))
