@@ -40,12 +40,12 @@ class Dynamics(nn.Module):
         super().__init__()
 
         self.env = env
-        self.rb = rb if rb != None else ReplayBuffer(1e6,
+        self.rb = rb if rb != None else ReplayBuffer(int(1e6),
                                                 env.single_observation_space,
                                                 env.single_action_space,
                                                 device=kwargs['device'],
                                                 handle_timeout_termination=False,
-                                                n_envs=n_envs
+                                                n_envs=env.num_envs
                                             )
 
         # Configure network

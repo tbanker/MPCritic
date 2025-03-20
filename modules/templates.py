@@ -83,10 +83,85 @@ def template_linear_simulator(model, sim_p):
 
     return simulator
 
+def template_LQR_model(n, m, symvar_type='SX'):
+    """
+    --------------------------------------------------------------------------
+    template_model: Variables / RHS / AUX
+    --------------------------------------------------------------------------
+    """
+    model_type = 'discrete' # either 'discrete' or 'continuous'
+    model = do_mpc.model.Model(model_type, symvar_type)
+
+    # States struct (optimization variables):
+    _x = model.set_variable(var_type='_x', var_name='x', shape=(n,1))
+
+    # Input struct (optimization variables):
+    _u = model.set_variable(var_type='_u', var_name='u', shape=(m,1))
+
+    # Fixed parameters:
+    A = model.set_variable('_p', var_name='A', shape=(n,n))
+    B = model.set_variable('_p', var_name='B', shape=(n,m))
+    P = model.set_variable('_p', var_name='P', shape=(n,n))
+
+    # Set expression. These can be used in the cost function, as non-linear constraints
+    # or just to monitor another output.
+    model.set_expression(expr_name='stage_cost', expr=ca.sum1(_x**2)+ca.sum1(_u**2))
+    model.set_expression(expr_name='terminal_cost', expr=ca.bilin(P, _x))
+
+    x_next = model.set_variable(var_type='_z', var_name='x_next', shape=(n,1))
+
+    model.set_rhs('x', x_next)
+
+    model.set_alg('x_next', x_next-A@_x-B@_u)
+
+    model.setup()
+
+    return model
+
+def template_conLQR_mpc(model, H, mpc_p, xlim, ulim, silence_solver=False):
+    """
+    --------------------------------------------------------------------------
+    template_mpc: tuning parameters
+    --------------------------------------------------------------------------
+    """
+    mpc = do_mpc.controller.MPC(model)
+
+    mpc.settings.n_robust = 0
+    mpc.settings.n_horizon = H
+    mpc.settings.t_step = 1.0
+    mpc.settings.store_full_solution =True
+
+    if silence_solver:
+        mpc.settings.supress_ipopt_output()
+
+    lterm = model.aux['stage_cost']
+    mterm = model.aux['terminal_cost']
+
+    mpc.set_objective(lterm=lterm, mterm=mterm)
+    mpc.set_rterm(u=0.)
+
+    if xlim is not None:
+        mpc.bounds['lower','_x','x'] = xlim[0]
+        mpc.bounds['upper','_x','x'] = xlim[1]
+    if ulim is not None:
+        mpc.bounds['lower','_u','u'] = ulim[0]
+        mpc.bounds['upper','_u','u'] = ulim[1]
+
+    p_template = mpc.get_p_template(n_combinations=1)
+    for key in mpc_p.keys():
+        p_template['_p',:,key] = mpc_p[key]
+
+    def p_fun(t_now):
+        return p_template
+
+    mpc.set_p_fun(p_fun)
+
+    mpc.setup()
+
+    return mpc
+
 class LQREnv(gym.Env):
     def __init__(self,
-            n=4,
-            m=2,
             A=0.5 * np.array([[1., 0., 2., 0.],
                               [0., 1., 0., 1.],
                               [0., 0., 1., 2.],
@@ -99,7 +174,9 @@ class LQREnv(gym.Env):
             R=np.diag(np.ones(2, np.float32)),
             max_timesteps=10
         ):
-        
+
+        n = A.shape[0]
+        m = B.shape[1]
         assert (A.shape == (n,n)) and (B.shape == (n,m))
         assert (Q.shape == (n,n)) and (R.shape == (m,m))
         self.n = n

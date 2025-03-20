@@ -6,14 +6,17 @@ import time
 import numpy as np
 import torch
 from torch import optim
+from do_mpc.differentiator import DoMPCDifferentiator, NLPDifferentiator
+import casadi as ca
+from neuromancer.modules.blocks import MLP_bounds
 
 import gymnasium as gym
 import tyro
 from stable_baselines3.common.buffers import ReplayBuffer
 from dataclasses import dataclass
 
-from modules.templates import LQREnv
-from modules.mpcomponents import QuadraticStageCost, QuadraticTerminalCost, PDQuadraticTerminalCost, LinearDynamics, LinearPolicy
+from modules.templates import LQREnv, template_LQR_model, template_conLQR_mpc
+from modules.mpcomponents import QuadraticStageCost, QuadraticTerminalCost, LinearDynamics, LinearPolicy
 from modules.mpcritic import MPCritic, InputConcat
 from modules.dynamics import Dynamics
 from modules.dpcontrol import DPControl
@@ -101,24 +104,23 @@ def make_env(env_id, seed, idx, capture_video, run_name):
 
     return thunk
 
-def validation_test(
-    learn_dynamics, 
-    learn_dpcontrol,
-    learn_mpcritic,
-    pd_V,
+def scalability_test(
+    H,
+    set_initial_guess,
+    mu_class,
+    n_hidden,
+    hidden_nodes,
     seed,
     batch_size,
     n_batches,
-    n_sysid_batches,
     n_samples,
     sampling,
     save_results,
-    save_less=False,
 ):
     """ User settings: """
 
     exp_kwargs = {
-        'seed':seed, 'batch_size':batch_size, 'n_batches':n_batches, 'n_sysid_batches':n_sysid_batches, 'n_samples':n_samples, 'sampling':sampling, 'pd_V':pd_V #, 'f_unc_scale':f_unc_scale
+        'seed':seed, 'batch_size':batch_size, 'n_batches':n_batches, 'n_samples':n_samples, 'sampling':sampling,
         }
     
     trainer_kwargs = {
@@ -157,102 +159,116 @@ def validation_test(
     P_opt = calc_P(A_env, B_env, Q, R).astype(np_kwargs['dtype'])
 
     """ Model setup """
-    A_mpc = np.random.normal(size=(n,n)).astype(np_kwargs['dtype']) if learn_dynamics else A_env.copy()
-    B_mpc = np.random.normal(size=(n,m)).astype(np_kwargs['dtype']) if learn_dynamics else B_env.copy()
+    A_mpc = A_env.copy()
+    B_mpc = B_env.copy()
     Q_mpc, R_mpc = Q.copy(), R.copy()
-    K = np.random.normal(size=(m,n)).astype(np_kwargs['dtype']) if learn_dpcontrol else K_opt
-    if pd_V:
-        L = np.random.normal(size=(n,n)).astype(np_kwargs['dtype'])
-    else:
-        P = np.random.uniform(size=(n,n)).astype(np_kwargs['dtype']) if learn_mpcritic else P_opt.copy()
+    K = K_opt
+    P = P_opt.copy()
 
-    H = 1
     lr = 0.001
-    V = PDQuadraticTerminalCost(n, L) if pd_V else QuadraticTerminalCost(n, P)
-    l = QuadraticStageCost(n, m, Q_mpc, R_mpc)
     f = LinearDynamics(n, m, A_mpc, B_mpc)
-    mu = LinearPolicy(n, m, K)
-
     concat_f = InputConcat(f)
-    dynamics = Dynamics(envs, rb, dx=concat_f, lr=lr, opt="AdamW")
+    dynamics = Dynamics(envs, rb, dx=concat_f, lr=lr)
 
-    dpcontrol = DPControl(envs, H=H, rb=rb, dynamics=dynamics, V=V, l=l, mu=mu, lr=lr, opt="AdamW")
+    # dpcontrol = DPControl(envs, rb, mpc_horizon, dynamics, l, V, mu, lr=lr)
+    xlim = np.vstack([-np.inf*np.ones(n), np.inf*np.ones(n)])
+    ulim = np.vstack([-np.inf*np.ones(m), np.inf*np.ones(m)])
+    if mu_class == "MLP_bounds":
+        mu = MLP_bounds(n, m, bias=True,
+                        linear_map=torch.nn.Linear, nonlin=torch.nn.ReLU,
+                        hsizes=[hidden_nodes for h in range(n_hidden)],
+                        min=torch.tensor(ulim[0]),
+                        max=torch.tensor(ulim[1]))
+    V = QuadraticTerminalCost(n, P)
+    l = QuadraticStageCost(n, m, Q_mpc, R_mpc)
+    dpcontrol = DPControl(envs, H=H, rb=rb, dynamics=dynamics, V=V, l=l, mu=mu, lr=lr, xlim=xlim, ulim=ulim, opt="AdamW")
+    critic = MPCritic(dpcontrol)
 
-    unc_p = {'A' : [A_mpc],
-             'B' : [B_mpc]} # 1 uncertainty scenario considered
-    critic = MPCritic(dpcontrol, unc_p=unc_p)
-    critic.setup_mpc()
+    unc_p = {'A' : A_mpc,
+             'B' : B_mpc,
+             'P' : P_opt}
+    model = template_LQR_model(n, m)
 
     """ Learning Q-function """
     critic.requires_grad_(True)
-    mse = torch.nn.MSELoss(reduction='mean')
-    critic_optimizer = optim.AdamW(list(V.parameters()), lr=lr)
-    p_true = np.concatenate([A_env, B_env], axis=1)
+    critic_params = list(V.parameters())+list(f.parameters())
+    critic_optimizer = optim.Adam(critic_params, lr=lr)
 
     results = {
         "exp_kwargs" : exp_kwargs,
-        "A_env" : A_env,
-        "B_env" : B_env,
+        "A" : A_env,
+        "B" : B_env,
         "Q" : Q,
         "R" : R,
-        "P_opt" : P_opt,
-        "K_opt" : K_opt,
-        "A_lrn" : [],
-        "B_lrn" : [],
-        "K_lrn" : [],
-        "P_lrn" : [],
+        "mu_fwd" : [],
+        "mu_bkwd" : [],
+        "mpc_fwd" : [],
+        "mpc_bkwd" : [],
+        "avg_mpc_fwd" : [],
+        "avg_mpc_bkwd" : [],
     }
-
-    results["A_lrn"].append(f.A.clone().detach().numpy())
-    results["B_lrn"].append(f.B.clone().detach().numpy())
-    results["K_lrn"].append(mu.K.clone().detach().numpy())
-    results["P_lrn"].append(V.P.clone().detach().numpy())
 
     obs, _ = envs.reset(seed=args.seed)
     obs = fill_rb(rb, envs, obs, policy=None, sampling=sampling, n_samples=n_samples)
 
-    for i in range(1,n_batches+1):
+    for i in range(n_batches):
         
         batch = rb.sample(args.batch_size)
+        critic_optimizer.zero_grad()
 
-        with HiddenPrints():
-            if learn_dynamics:
-                critic.dpcontrol.dynamics.train(trainer_kwargs=trainer_kwargs, n_samples=batch_size, batch_size=batch_size)
-            if i > n_sysid_batches:
-                if learn_mpcritic:
-                    with torch.no_grad():
-                        q_targ = batch.rewards + critic(s=batch.next_observations)
-                    q_pred = critic(s=batch.observations, a=batch.actions)
-                    td_loss = mse(q_pred, q_targ)
+        input = batch.observations
+        start = time.time()
+        output = critic.dpcontrol.mu(input) # critic(input)
+        mu_fwd = time.time() - start
+        if torch.any(output < torch.tensor(ulim[0])) or torch.any(output > torch.tensor(ulim[1])):
+            raise ValueError("Outside of constraints; unfair comparison")
 
-                    critic_optimizer.zero_grad()
-                    td_loss.backward()
-                    critic_optimizer.step()
-                if learn_dpcontrol:
-                    critic.dpcontrol.train(trainer_kwargs=trainer_kwargs, n_samples=batch_size, batch_size=batch_size)                  
+        loss = output.sum()
+        start = time.time()
+        loss.backward()
+        mu_bkwd = time.time() - start
+        print(f"mu forward: {mu_fwd}\nmu backward: {mu_bkwd}")
 
-        if (i % 100) == 0:
-            p_learn = np.concatenate([f.A.detach().numpy(), f.B.detach().numpy()], axis=1)
-            print(f"Iter {i}: 'Distance' from...\n \
-                optimal value function: {np.mean(np.abs(P_opt - V.P.detach().numpy()))}\n \
-                optimal gain: {np.mean(np.abs(K_opt - mu.K.detach().numpy()))}\n \
-                true model: {np.mean(np.abs(p_true - p_learn))}")
-            if save_less:
-                results["A_lrn"].append(f.A.clone().detach().numpy())
-                results["B_lrn"].append(f.B.clone().detach().numpy())
-                results["K_lrn"].append(mu.K.clone().detach().numpy())
-                results["P_lrn"].append(V.P.clone().detach().numpy())
+        # time MPC
+        mpc_fwd, mpc_bkwd = 0, 0
+        for i in range(args.batch_size):
+            mpc = template_conLQR_mpc(model, H=H, mpc_p=unc_p, xlim=xlim, ulim=ulim)
+            mpc_diff = DoMPCDifferentiator(mpc)
 
-    print(f'P == P^*:\n{np.isclose(P_opt, V.P.detach().numpy())}')
+            x0 = batch.observations[[i]].mT.numpy()
+            mpc.x0 = x0
+
+            if set_initial_guess:
+                mpc.set_initial_guess()
+
+            with HiddenPrints():
+                input = x0
+                start = time.time()
+                mpc.make_step(input)
+                mpc_fwd += time.time() - start
+
+                start = time.time()
+                dx_dp_num, dlam_dp_num = mpc_diff.differentiate()
+                mpc_bkwd += time.time() - start
+        print(f"mpc forward: {mpc_fwd}\nmpc backward: {mpc_bkwd}")
+        avg_mpc_fwd = mpc_fwd / args.batch_size
+        avg_mpc_bkwd = mpc_bkwd / args.batch_size
+
+        results["mu_fwd"].append(mu_fwd)
+        results["mu_bkwd"].append(mu_bkwd)
+        results["mpc_fwd"].append(mpc_fwd)
+        results["mpc_bkwd"].append(mpc_bkwd)
+        results["avg_mpc_fwd"].append(avg_mpc_fwd)
+        results["avg_mpc_bkwd"].append(avg_mpc_bkwd)
 
     if save_results:
-        results["A_lrn"] = np.array(results["A_lrn"])
-        results["B_lrn"] = np.array(results["B_lrn"])
-        results["K_lrn"] = np.array(results["K_lrn"])
-        results["P_lrn"] = np.array(results["P_lrn"])
+        results["mu_fwd"] = np.array(results["mu_fwd"])
+        results["mu_bkwd"] = np.array(results["mu_bkwd"])
+        results["mpc_fwd"] = np.array(results["mpc_fwd"])
+        results["mpc_bkwd"] = np.array(results["mpc_bkwd"])
 
         file_name = f"seed={seed}.pt"
-        save_dir = os.path.join(os.path.dirname(__file__), "runs", "validation", f"{date.today()}_n={n}_m={m}_f={learn_dynamics}_mu={learn_dpcontrol}_V={learn_mpcritic}_PD={pd_V}")
+        save_dir = os.path.join(os.path.dirname(__file__), "runs", "scalablity", f"{date.today()}_n={n}_m={m}_H={H}_set_initial_guess={set_initial_guess}")
         file_path = os.path.join(save_dir, file_name)
         os.makedirs(save_dir, exist_ok=True)
 
@@ -262,14 +278,10 @@ if __name__ == '__main__':
     from modules.utils import stable, controllable
     from scipy.linalg import block_diag
 
-    seeds = list(range(6,100))
+    seeds = list(range(1))
     exp_dicts = {
-        # 'learn_f' :         {'learn_dynamics':True,  'learn_dpcontrol':False, 'learn_mpcritic':False, 'pd_V':False, },
-        # 'learn_mu' :        {'learn_dynamics':False, 'learn_dpcontrol':True,  'learn_mpcritic':False, 'pd_V':False, },
-        # 'learn_V' :         {'learn_dynamics':False, 'learn_dpcontrol':False, 'learn_mpcritic':True,  'pd_V':False, },
-        # 'learn_V_pd' :      {'learn_dynamics':False, 'learn_dpcontrol':False, 'learn_mpcritic':True,  'pd_V':True, },
-        # 'learn_f_mu_V' :    {'learn_dynamics':True,  'learn_dpcontrol':True,  'learn_mpcritic':True,  'pd_V':False, },
-        'learn_f_mu_V_pd' : {'learn_dynamics':True,  'learn_dpcontrol':True,  'learn_mpcritic':True,  'pd_V':True, },
+        'H=1_set_initial_guess=True_MLP_bounds_2x100' : {'H':1, 'set_initial_guess':True, 'mu_class':'MLP_bounds', 'n_hidden':2, 'hidden_nodes':100},
+        # 'H=1_set_initial_guess=False_MLP_bounds_2x100' : {'H':1, 'set_initial_guess':False, 'mu_class':'MLP_bounds', 'n_hidden':2, 'hidden_nodes':100},
     }
 
     n_list = [2**i for i in range(2,8)] # [4**i for i in range(1,4)] + [4]*2 + [4**i for i in range(2,4)]
@@ -300,23 +312,20 @@ if __name__ == '__main__':
                         'R' : 1000*np.diag(np.ones(B.shape[1], **np_kwargs)),
                         'max_timesteps': 1} # designed to randomly initialize state, take action, and then restart environment
             )
-
-
+            
             for exp_dict in exp_dicts.values():
-                validation_test(
-                    learn_dynamics = exp_dict['learn_dynamics'],
-                    learn_dpcontrol = exp_dict['learn_dpcontrol'],
-                    learn_mpcritic = exp_dict['learn_mpcritic'],
-                    pd_V = exp_dict['pd_V'],
+                scalability_test(
+                    H = exp_dict['H'],
+                    set_initial_guess = exp_dict['set_initial_guess'],
+                    n_hidden = exp_dict['n_hidden'],
+                    mu_class = exp_dict['mu_class'],
+                    hidden_nodes = exp_dict['hidden_nodes'],
 
                     seed = seed,
                     batch_size = 256,
-                    n_batches = 100000,
-                    n_sysid_batches = 0,
-                    n_samples = 100000,
+                    n_batches = 1,
+                    n_samples = 256,
                     sampling = "Uniform",
 
                     save_results = True,
-                    save_less=True,
                 )
-

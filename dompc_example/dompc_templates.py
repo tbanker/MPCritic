@@ -7,9 +7,9 @@ import os
 rel_do_mpc_path = os.path.join('..','..')
 sys.path.append(rel_do_mpc_path)
 import do_mpc
+from scipy.linalg import solve_discrete_are
 
-
-def template_linear_model(symvar_type='SX'):
+def template_LQR_model(symvar_type='SX'):
     """
     --------------------------------------------------------------------------
     template_model: Variables / RHS / AUX
@@ -24,14 +24,15 @@ def template_linear_model(symvar_type='SX'):
     # Input struct (optimization variables):
     _u = model.set_variable(var_type='_u', var_name='u', shape=(1,1))
 
-    # Set expression. These can be used in the cost function, as non-linear constraints
-    # or just to monitor another output.
-    model.set_expression(expr_name='stage_cost', expr=sum1(_x**2)+sum1(_u**2))
-    model.set_expression(expr_name='terminal_cost', expr=sum1(_x**2))
-   
     # Fixed parameters:
     A = model.set_variable('_p', var_name='A', shape=(4,4))
     B = model.set_variable('_p', var_name='B', shape=(4,1))
+    P = model.set_variable('_p', var_name='P', shape=(4,4))
+
+    # Set expression. These can be used in the cost function, as non-linear constraints
+    # or just to monitor another output.
+    model.set_expression(expr_name='stage_cost', expr=sum1(_x**2)+sum1(_u**2))
+    model.set_expression(expr_name='terminal_cost', expr=bilin(P, _x))
 
     x_next = model.set_variable(var_type='_z', var_name='x_next', shape=(4,1))
 
@@ -94,16 +95,19 @@ def template_LQR_mpc(model, silence_solver=False):
     mpc.set_objective(lterm=lterm, mterm=mterm)
     mpc.set_rterm(u=0.)
 
-    A_values = 0.5 * np.array([[1., 0., 2., 0.],
-                                [0., 1., 0., 1.],
-                                [0., 0., 1., 2.],
-                                [1., 0., 0., 1.],]).flatten()
-    B_values = np.array([[0.5],
-                         [0.],
-                         [0.],
-                         [0.]]).flatten()
+    A = 0.5 * np.array([[1., 0., 2., 0.],
+                        [0., 1., 0., 1.],
+                        [0., 0., 1., 2.],
+                        [1., 0., 0., 1.],])
+    B = np.array([[0.5],
+                  [0.],
+                  [0.],
+                  [0.]])
+    Q = np.diag(np.ones(A.shape[0]))
+    R = np.diag(np.ones(B.shape[1]))
+    P = solve_discrete_are(A,B,Q,R)
 
-    mpc.set_uncertainty_values(A = A_values, B = B_values)
+    mpc.set_uncertainty_values(A = [A], B = [B], P = [P])
 
     mpc.setup()
 

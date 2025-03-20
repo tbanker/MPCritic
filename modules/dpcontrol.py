@@ -12,7 +12,7 @@ from neuromancer.modules import blocks
 from neuromancer.dynamics import integrators
 from neuromancer.constraint import variable, Objective
 from neuromancer.problem import Problem
-from neuromancer.loss import PenaltyLoss
+from neuromancer.loss import PenaltyLoss, AugmentedLagrangeLoss
 from neuromancer.dataset import DictDataset
 from neuromancer.trainer import Trainer
 from neuromancer.psl import signals
@@ -42,16 +42,16 @@ class InputConcat(torch.nn.Module):
         return self.module(z)
 
 class DPControl(nn.Module):
-    def __init__(self, env, H=5, rb=None, dynamics=None, l=None, V=None, mu=None, xlim=None, ulim=None, opt="AdamW", lr=0.001):
+    def __init__(self, env, H=5, rb=None, dynamics=None, l=None, V=None, mu=None, xlim=None, ulim=None, loss=None, scale=1.0, opt="AdamW", lr=0.001):
         super().__init__()
 
         self.env = env
-        self.rb = rb if rb != None else ReplayBuffer(1e6,
+        self.rb = rb if rb != None else ReplayBuffer(int(1e6),
                                                 env.single_observation_space,
                                                 env.single_action_space,
                                                 device=kwargs['device'],
                                                 handle_timeout_termination=False,
-                                                n_envs=n_envs
+                                                n_envs=env.num_envs
                                             )
 
         # Configure network
@@ -83,13 +83,14 @@ class DPControl(nn.Module):
                              'device' : list(self.model.parameters())[0].device,}
 
         # Formulate problem
+        self.loss = loss
+        self.scale = scale
         self.lpred = variable('l')
         self.Vpred = variable('V')
         self.l_loss = Objective(var=(self.H+1.)*self.lpred[:, :-1, :], name='stage_loss')
         self.V_loss = Objective(var=(self.Vpred[:, [-1], :]), name='terminal_loss')
         self.constraints = [] if ((self.xlim is None) and (self.ulim is None)) else self._constraints()
-        self.obj = PenaltyLoss([self.l_loss, self.V_loss], self.constraints)
-        self.problem = Problem([self.model], self.obj)
+        self.problem = self._problem()
 
         # Setup optimizer
         if opt == "Adam":
@@ -123,17 +124,14 @@ class DPControl(nn.Module):
         train_loader = DataLoader(datadict, batch_size=batch_size, shuffle=True, collate_fn=datadict.collate_fn)
         return train_loader
     
-    def _constraints(self):
-        
-        # penalties on constraints ought to be adjustable
-        
+    def _constraints(self):        
         x = variable('x')
         u = variable('u')
         constraints = []
 
         if self.xlim is not None:
-            state_lower_bound_penalty = 10.*(x > self.xlim[0])
-            state_upper_bound_penalty = 10.*(x > self.xlim[1])
+            state_lower_bound_penalty = self.scale * (x > self.xlim[0])
+            state_upper_bound_penalty = self.scale * (x < self.xlim[1])
             state_lower_bound_penalty.name = 'x_min'
             state_upper_bound_penalty.name = 'x_max'
 
@@ -141,8 +139,8 @@ class DPControl(nn.Module):
             constraints.append(state_upper_bound_penalty)
 
         if self.ulim is not None:
-            action_lower_bound_penalty = 10.*(u > self.ulim[0])
-            action_upper_bound_penalty = 10.*(u > self.ulim[1])
+            action_lower_bound_penalty = self.scale * (u > self.ulim[0])
+            action_upper_bound_penalty = self.scale * (u < self.ulim[1])
             action_lower_bound_penalty.name = 'u_min'
             action_upper_bound_penalty.name = 'u_max'
 
@@ -150,6 +148,26 @@ class DPControl(nn.Module):
             constraints.append(action_upper_bound_penalty)
 
         return constraints
+    
+    def _problem(self):
+        if self.loss == 'penalty':
+            self.obj = PenaltyLoss([self.l_loss, self.V_loss], self.constraints)
+        elif self.loss == 'lagrange':
+            """
+            I don't think this was ever fully implemented by Neuromancer
+                1) The lagrange multiplier logic only works if the batch_size is the size of the train_loader (n_samples)
+                2) The logic for applying the lagrange multipliers in loss.py uses input_dict['input'],
+                    but the key ['input'] is never added to input_dict nor referenced in source outside of loss.py
+            """
+            raise NotImplementedError
+            assert n_samples == batch_size
+            train_loader = self._train_loader(n_samples, batch_size)
+            self.obj = AugmentedLagrangeLoss([self.l_loss, self.V_loss], self.constraints, train_data=train_loader)
+        else: # unconstrained
+            self.obj = PenaltyLoss([self.l_loss, self.V_loss], [])
+
+        problem = Problem([self.model], self.obj)
+        return problem
 
 if __name__ == "__main__":
     import os
@@ -162,7 +180,7 @@ if __name__ == "__main__":
 
     from dynamics import Dynamics
     from mpcomponents import QuadraticStageCost, QuadraticTerminalCost, LinearDynamics, LinearPolicy
-    from templates import template_linear_model, LQREnv
+    from templates import LQREnv
     from utils import calc_K, calc_P, fill_rb
 
     """ CleanRL setup """
@@ -275,22 +293,30 @@ if __name__ == "__main__":
     concat_f = InputConcat(f)
     dynamics = Dynamics(envs, rb, dx=concat_f)
 
-    xlim = np.vstack([np.zeros(n), 0.1*np.ones(n)])
-    ulim = np.vstack([np.zeros(m), 0.1*np.ones(m)])
-    dpcontrol = DPControl(envs, rb, mpc_horizon, dynamics, l, V, mu, xlim=xlim, ulim=ulim)
+    xlim = np.vstack([-np.inf*np.ones(n), np.inf*np.ones(n)])
+    ulim = np.vstack([-np.inf*np.ones(m), np.inf*np.ones(m)])
+    dpcontrol = DPControl(envs, rb, mpc_horizon, dynamics, l, V, mu, xlim=xlim, ulim=ulim, loss='penalty')
 
     """ Learning ficticious controller """
     K_init = K.copy()
     print(f"Before training: 'Distance' from optimal gain: {np.linalg.norm(K_opt - K_init, 'fro')}")
-    trainer_kwargs = {'epochs':1, 'epoch_verbose':1, 'patience':1,}
 
+    """ Scheme 1 """
+    trainer_kwargs = {'epochs':400, 'epoch_verbose':10, 'patience':400,}
     obs, _ = envs.reset(seed=args.seed)
-    for i in range(1000):
-        obs = fill_rb(rb, envs, obs, n_samples=args.batch_size)
-        dpcontrol.train(trainer_kwargs=trainer_kwargs, n_samples=args.batch_size, batch_size=args.batch_size)
+    obs = fill_rb(rb, envs, obs, n_samples=int(1e4))
+    dpcontrol.train(trainer_kwargs=trainer_kwargs, n_samples=int(1e4), batch_size=args.batch_size)
+    K_learn = mu.K.detach().numpy()
+    print(f"Iter: 'Distance' from optimal gain: {np.linalg.norm(K_opt - K_learn, 'fro')}")
 
-        if (i % 100) == 0:
-            K_learn = mu.K.detach().numpy()
-            print(f"Iter {i}: 'Distance' from optimal gain: {np.linalg.norm(K_opt - K_learn, 'fro')}")
+    """ Scheme 2 """
+    # trainer_kwargs = {'epochs':1, 'epoch_verbose':1, 'patience':1,}
+    # for i in range(1000):
+    #     obs = fill_rb(rb, envs, obs, n_samples=args.batch_size)
+    #     dpcontrol.train(trainer_kwargs=trainer_kwargs, n_samples=args.batch_size, batch_size=args.batch_size)
+
+    #     if (i % 100) == 0:
+    #         K_learn = mu.K.detach().numpy()
+    #         print(f"Iter {i}: 'Distance' from optimal gain: {np.linalg.norm(K_opt - K_learn, 'fro')}")
 
     print(f"K' == K^*:\n{np.isclose(K_opt, K_learn)}")
