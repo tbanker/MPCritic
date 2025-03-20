@@ -51,7 +51,7 @@ class Dynamics(nn.Module):
         # Configure network
         self.nx = np.array(env.single_observation_space.shape).prod()
         self.nu = np.array(env.single_action_space.shape).prod()
-        self.dx = dx if dx != None else InputConcat(blocks.ResMLP(self.nx + self.nu, self.nx, bias=True,
+        self.dx = dx if dx != None else InputConcat(blocks.MLP(self.nx + self.nu, self.nx, bias=True,
                                                       linear_map=torch.nn.Linear, nonlin=torch.nn.SiLU,
                                                       hsizes=[64 for h in range(2)]))
         self.system_node = Node(self.dx, ['x','u'],['xnext'])

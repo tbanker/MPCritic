@@ -42,11 +42,11 @@ class InputConcat(torch.nn.Module):
         return self.module(z)
 
 class DPControl(nn.Module):
-    def __init__(self, env, H=5, rb=None, dynamics=None, l=None, V=None, mu=None, xlim=None, ulim=None, loss=None, scale=1.0, opt="AdamW", lr=0.001):
+    def __init__(self, env, H=1, rb=None, dynamics=None, l=None, V=None, mu=None, xlim=None, ulim=None, loss=None, scale=1.0, opt="AdamW", lr=0.001):
         super().__init__()
 
         self.env = env
-        self.rb = rb if rb != None else ReplayBuffer(int(1e6),
+        self.rb = rb if rb != None else ReplayBuffer(int(1e5),
                                                 env.single_observation_space,
                                                 env.single_action_space,
                                                 device=kwargs['device'],
@@ -58,7 +58,7 @@ class DPControl(nn.Module):
         self.nx = np.array(env.single_observation_space.shape).prod()
         self.nu = np.array(env.single_action_space.shape).prod()
         self.H = H # mpc horizon per do-mpc
-        self.mu = mu if mu != None else blocks.ResMLP(self.nx, self.nu, bias=True,
+        self.mu = mu if mu != None else blocks.MLP(self.nx, self.nu, bias=True,
                                                       linear_map=torch.nn.Linear, nonlin=torch.nn.ReLU,
                                                       hsizes=[64 for h in range(2)])
         self.dynamics = dynamics if dynamics != None else Dynamics(env, rb=rb)
@@ -67,9 +67,9 @@ class DPControl(nn.Module):
         #                                                   linear_map=torch.nn.Linear, nonlin=torch.nn.ReLU,
         #                                                   hsizes=[64 for h in range(1)]))
         # self.V = V if V != None else PDQuadraticTerminalCost(self.nx)                                        
-        self.V = V if V != None else blocks.InputConvexNN(self.nx, 1, bias=True,
+        self.V = V if V != None else blocks.MLP(self.nx, 1, bias=True,
                                                           linear_map=torch.nn.Linear, nonlin=torch.nn.ReLU,
-                                                          hsizes=[64 for h in range(1)])
+                                                          hsizes=[64 for h in range(2)])
 
         self.xlim = xlim # np.array(2,n) 1-upper, 0-lower
         self.ulim = ulim # np.array(2,m) 1-upper, 0-lower

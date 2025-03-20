@@ -66,7 +66,7 @@ class Args:
     """the environment id of the Atari game"""
     total_timesteps: int = 100000
     """total timesteps of the experiments"""
-    learning_rate: float = 3e-4
+    learning_rate: float = 1e-3
     """the learning rate of the optimizer"""
     buffer_size: int = int(1e6)
     """the replay memory buffer size"""
@@ -270,7 +270,7 @@ poetry run pip install "stable_baselines3==2.0.0a1"
             qf1_loss.backward()
             q_optimizer.step()
 
-            if args.critic_mode == "mpcritic" and global_step % 100 == 0:
+            if args.critic_mode == "mpcritic" and global_step % 10 == 0:
                 qf1.train_f_mu()
 
             if global_step % args.policy_frequency == 0:
