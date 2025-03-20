@@ -46,13 +46,13 @@ class Args:
     """if toggled, `torch.backends.cudnn.deterministic=False`"""
     cuda: bool = True
     """if toggled, cuda will be enabled by default"""
-    track: bool = False
+    track: bool = True
     """if toggled, this experiment will be tracked with Weights and Biases"""
-    wandb_project_name: str = "cleanRL"
+    wandb_project_name: str = "mpcritic-dev"
     """the wandb's project name"""
     wandb_entity: str = None
     """the entity (team) of wandb's project"""
-    capture_video: bool = False
+    capture_video: bool = True
     """whether to capture videos of the agent performances (check out `videos` folder)"""
     save_model: bool = False
     """whether to save model into the `runs/{run_name}` folder"""
@@ -74,7 +74,7 @@ class Args:
     """the discount factor gamma"""
     tau: float = 0.005
     """target smoothing coefficient (default: 0.005)"""
-    batch_size: int = 256
+    batch_size: int = 64
     """the batch size of sample from the reply memory"""
     exploration_noise: float = 0.1
     """the scale of exploration noise"""
@@ -186,7 +186,7 @@ poetry run pip install "stable_baselines3==2.0.0a1"
     actor = Actor(envs).to(device)
     target_actor = Actor(envs).to(device)
     target_actor.load_state_dict(actor.state_dict())
-    actor_optimizer = optim.Adam(list(actor.parameters()), lr=args.learning_rate)
+    actor_optimizer = optim.AdamW(list(actor.parameters()), lr=args.learning_rate)
 
     envs.single_observation_space.dtype = np.float32
     rb = ReplayBuffer(
@@ -197,12 +197,11 @@ poetry run pip install "stable_baselines3==2.0.0a1"
         handle_timeout_termination=False,
     )
 
-
     if args.critic_mode == "vanilla":
         qf1 = QNetwork(envs).to(device)
         qf1_target = QNetwork(envs).to(device)
         qf1_target.load_state_dict(qf1.state_dict())
-        q_optimizer = optim.Adam(list(qf1.parameters()), lr=args.learning_rate)
+        q_optimizer = optim.AdamW(list(qf1.parameters()), lr=args.learning_rate)
     elif args.critic_mode == "mpcritic":
         dpcontrol = DPControl(envs, rb=rb, lr=args.learning_rate).to(device)
         dpcontrol_target = DPControl(envs, rb=rb, lr=args.learning_rate).to(device)
@@ -210,12 +209,12 @@ poetry run pip install "stable_baselines3==2.0.0a1"
         
         qf1 = MPCritic(dpcontrol).to(device)
         qf1.setup_mpc()
+        qf1.requires_grad_(True) # just do it
         qf1_target = MPCritic(dpcontrol_target).to(device)
-        q_optimizer = optim.Adam(list(qf1.parameters()), lr=args.learning_rate) 
-        # TODO not all the parameters show up
-        for name, param in dpcontrol.named_parameters():
-            if param.requires_grad:
-                print(name, param.data)
+        qf1_params = list()
+        for p in qf1.critic_parameters.values():
+            qf1_params += list(p.parameters())
+        q_optimizer = optim.AdamW(qf1_params, lr=args.learning_rate) 
 
     start_time = time.time()
 
@@ -254,6 +253,8 @@ poetry run pip install "stable_baselines3==2.0.0a1"
 
         # ALGO LOGIC: training.
         if global_step > args.learning_starts:
+
+
             data = rb.sample(args.batch_size)
 
             with torch.no_grad():
@@ -268,6 +269,9 @@ poetry run pip install "stable_baselines3==2.0.0a1"
             q_optimizer.zero_grad()
             qf1_loss.backward()
             q_optimizer.step()
+
+            if args.critic_mode == "mpcritic" and global_step % 100 == 0:
+                qf1.train_f_mu()
 
             if global_step % args.policy_frequency == 0:
                 actor_loss = -qf1(data.observations, actor(data.observations)).mean()

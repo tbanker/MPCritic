@@ -35,6 +35,13 @@ class MPCritic(nn.Module):
 
         self.dpcontrol = dpcontrol
 
+        self.critic_parameters = nn.ParameterDict({'l': self.dpcontrol.l.module, 'V': self.dpcontrol.V})
+        self.dynamics_parameters = nn.ParameterDict({'f': self.dpcontrol.dynamics.dx.module})
+        self.mu_parameters = nn.ParameterDict({'mu': self.dpcontrol.mu})
+        self.all_parameters = nn.ParameterDict({'l': self.dpcontrol.l.module, 'V': self.dpcontrol.V,
+                                                 'f': self.dpcontrol.dynamics.dx.module, 'mu': self.dpcontrol.mu})
+
+
         # Configure network
         self.H = self.dpcontrol.H # mpc horizon per do-mpc
         self.dx_node = Node(self.dpcontrol.dynamics.dx, ['x', 'u'], ['x_next'], name='dynamics_model')
@@ -49,6 +56,9 @@ class MPCritic(nn.Module):
         # Formulate problem
         self.obj = dpcontrol.obj
         self.problem = Problem([self.model], self.obj)
+
+        self.freeze(self.all_parameters)
+        self.unfreeze(self.critic_parameters)
 
         # Critic evaluation functions
         self.batched_fwd_s = torch.vmap(self.forward_critic_s)
@@ -120,6 +130,27 @@ class MPCritic(nn.Module):
         """ single-batched MPC operation """
         return self.mpc.make_step(x0)
     
+    def _update_dynamics(self):
+        self.freeze(self.all_parameters)
+        self.unfreeze(self.dynamics_parameters)
+        self.dpcontrol.dynamics.train()
+        self.freeze(self.dynamics_parameters)
+        self.unfreeze(self.critic_parameters) # default state should be critic parameters unfrozen
+        return
+    
+    def _update_controller(self):
+        self.freeze(self.all_parameters)
+        self.unfreeze(self.mu_parameters)
+        self.dpcontrol.train()
+        self.freeze(self.mu_parameters)
+        self.unfreeze(self.critic_parameters) # default state should be critic parameters unfrozen
+        return
+
+    def train_f_mu(self):
+        self._update_dynamics()
+        self._update_controller()
+        return
+
     def l4c_update(self):
         """ update all L4CasADi objects (do prior to recalling setup_mpc) """
         self.dx_l4c = l4c.L4CasADi(self.dx_mpc, **self.l4c_kwargs)
@@ -173,6 +204,20 @@ class MPCritic(nn.Module):
         self.init_mpc(x0)
 
         self.mpc.data, self.mpc._t0 = mpc_data, mpc_t0
+
+    def freeze(self, param_dict: nn.ParameterDict):
+        """
+        Freezes parameters in a ParameterDict
+        """
+        for name, param in param_dict.items():
+            param.requires_grad = False
+
+    def unfreeze(self, param_dict: nn.ParameterDict):
+        """
+        Unfreezes parameters in a ParameterDict
+        """
+        for name, param in param_dict.items():
+            param.requires_grad = True
 
 if __name__ == '__main__':
     import os

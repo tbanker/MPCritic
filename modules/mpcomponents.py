@@ -105,7 +105,7 @@ class PDQuadraticTerminalCost(nn.Module):
         super().__init__()
         L = torch.rand((n,n), **kwargs) if L is None else torch.from_numpy(L)
         self.n = n
-        self.L = nn.Parameter(L)
+        self.L = nn.Parameter(L,requires_grad=True)
         self.epsilon = epsilon
         # L shares memory with original numpy array
 

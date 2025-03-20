@@ -42,7 +42,7 @@ class InputConcat(torch.nn.Module):
         return self.module(z)
 
 class DPControl(nn.Module):
-    def __init__(self, env, H=1, rb=None, dynamics=None, l=None, V=None, mu=None, xlim=None, ulim=None, opt="Adam", lr=0.001):
+    def __init__(self, env, H=5, rb=None, dynamics=None, l=None, V=None, mu=None, xlim=None, ulim=None, opt="AdamW", lr=0.001):
         super().__init__()
 
         self.env = env
@@ -63,10 +63,13 @@ class DPControl(nn.Module):
                                                       hsizes=[64 for h in range(2)])
         self.dynamics = dynamics if dynamics != None else Dynamics(env, rb=rb)
         self.l = InputConcat(l) if l != None else InputConcat(QuadraticStageCost(self.nx, self.nu))
-        self.V = V if V != None else PDQuadraticTerminalCost(self.nx)                                        
-        # self.V = V if V != None else blocks.InputConvexNN(self.nx, 1, bias=True,
+        # self.l = InputConcat(l) if l != None else InputConcat(blocks.MLP(self.nx + self.nu, 1, bias=True,
         #                                                   linear_map=torch.nn.Linear, nonlin=torch.nn.ReLU,
-        #                                                   hsizes=[64 for h in range(2)])
+        #                                                   hsizes=[64 for h in range(1)]))
+        # self.V = V if V != None else PDQuadraticTerminalCost(self.nx)                                        
+        self.V = V if V != None else blocks.InputConvexNN(self.nx, 1, bias=True,
+                                                          linear_map=torch.nn.Linear, nonlin=torch.nn.ReLU,
+                                                          hsizes=[64 for h in range(1)])
 
         self.xlim = xlim # np.array(2,n) 1-upper, 0-lower
         self.ulim = ulim # np.array(2,m) 1-upper, 0-lower
@@ -97,13 +100,15 @@ class DPControl(nn.Module):
     def forward(self,x):
         return self.mu(x)
     
-    def train(self, trainer_kwargs, n_samples=1000, batch_size=256):
+    def train(self, trainer_kwargs=None, n_samples=1000, batch_size=256):
         train_loader = self._train_loader(n_samples, batch_size)
+        trainer_kwargs = trainer_kwargs if trainer_kwargs != None else {'epochs':1, 'epoch_verbose':10, 'patience':1,}
         trainer = Trainer(self.problem, train_loader,
                           optimizer=self.opt,
                           train_metric='train_loss',
                           eval_metric='train_loss',
                           **trainer_kwargs) # can add a test loss, but the dataset is constantly being updated anyway
+        trainer.current_epoch = 2
         self.best_model = trainer.train() # output is a deepcopy
         return
     
