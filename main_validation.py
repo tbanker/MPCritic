@@ -262,7 +262,7 @@ if __name__ == '__main__':
     from modules.utils import stable, controllable
     from scipy.linalg import block_diag
 
-    seeds = list(range(10))
+    seeds = list(range(6,100))
     exp_dicts = {
         # 'learn_f' :         {'learn_dynamics':True,  'learn_dpcontrol':False, 'learn_mpcritic':False, 'pd_V':False, },
         # 'learn_mu' :        {'learn_dynamics':False, 'learn_dpcontrol':True,  'learn_mpcritic':False, 'pd_V':False, },
@@ -272,8 +272,8 @@ if __name__ == '__main__':
         'learn_f_mu_V_pd' : {'learn_dynamics':True,  'learn_dpcontrol':True,  'learn_mpcritic':True,  'pd_V':True, },
     }
 
-    n_list = [4**i for i in range(1,4)] + [4]*2 + [4**i for i in range(2,4)]
-    m_list = 3*[4] + [4**i for i in range(2,4)] + [4**i for i in range(2,4)]
+    n_list = [2**i for i in range(2,8)] # [4**i for i in range(1,4)] + [4]*2 + [4**i for i in range(2,4)]
+    m_list = n_list # 3*[4] + [4**i for i in range(2,4)] + [4**i for i in range(2,4)]
     # n_list = [2**i for i in range(1,8,2)] + [2]*3 + [2**i for i in range(3,8,2)]
     # m_list = [2]*4 + [2**i for i in range(3,8,2)] + [2**i for i in range(3,8,2)]
     for seed in seeds:

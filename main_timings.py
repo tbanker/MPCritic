@@ -8,6 +8,7 @@ import torch
 from torch import optim
 from do_mpc.differentiator import DoMPCDifferentiator, NLPDifferentiator
 import casadi as ca
+from neuromancer.modules.blocks import MLP_bounds
 
 import gymnasium as gym
 import tyro
@@ -104,7 +105,11 @@ def make_env(env_id, seed, idx, capture_video, run_name):
     return thunk
 
 def scalability_test(
+    H,
     set_initial_guess,
+    mu_class,
+    n_hidden,
+    hidden_nodes,
     seed,
     batch_size,
     n_batches,
@@ -160,19 +165,22 @@ def scalability_test(
     K = K_opt
     P = P_opt.copy()
 
-    H = 1
     lr = 0.001
-    V = QuadraticTerminalCost(n, P)
-    l = QuadraticStageCost(n, m, Q_mpc, R_mpc)
     f = LinearDynamics(n, m, A_mpc, B_mpc)
-    mu = LinearPolicy(n, m, K)
-
     concat_f = InputConcat(f)
     dynamics = Dynamics(envs, rb, dx=concat_f, lr=lr)
 
     # dpcontrol = DPControl(envs, rb, mpc_horizon, dynamics, l, V, mu, lr=lr)
     xlim = np.vstack([-np.inf*np.ones(n), np.inf*np.ones(n)])
     ulim = np.vstack([-np.inf*np.ones(m), np.inf*np.ones(m)])
+    if mu_class == "MLP_bounds":
+        mu = MLP_bounds(n, m, bias=True,
+                        linear_map=torch.nn.Linear, nonlin=torch.nn.ReLU,
+                        hsizes=[hidden_nodes for h in range(n_hidden)],
+                        min=torch.tensor(ulim[0]),
+                        max=torch.tensor(ulim[1]))
+    V = QuadraticTerminalCost(n, P)
+    l = QuadraticStageCost(n, m, Q_mpc, R_mpc)
     dpcontrol = DPControl(envs, H=H, rb=rb, dynamics=dynamics, V=V, l=l, mu=mu, lr=lr, xlim=xlim, ulim=ulim, opt="AdamW")
     critic = MPCritic(dpcontrol)
 
@@ -196,6 +204,8 @@ def scalability_test(
         "mu_bkwd" : [],
         "mpc_fwd" : [],
         "mpc_bkwd" : [],
+        "avg_mpc_fwd" : [],
+        "avg_mpc_bkwd" : [],
     }
 
     obs, _ = envs.reset(seed=args.seed)
@@ -241,11 +251,15 @@ def scalability_test(
                 dx_dp_num, dlam_dp_num = mpc_diff.differentiate()
                 mpc_bkwd += time.time() - start
         print(f"mpc forward: {mpc_fwd}\nmpc backward: {mpc_bkwd}")
+        avg_mpc_fwd = mpc_fwd / args.batch_size
+        avg_mpc_bkwd = mpc_bkwd / args.batch_size
 
-        results["mu_fwd"].append(f.A.clone().detach().numpy())
-        results["mu_bkwd"].append(f.B.clone().detach().numpy())
-        results["mpc_fwd"].append(mu.K.clone().detach().numpy())
-        results["mpc_bkwd"].append(V.P.clone().detach().numpy())
+        results["mu_fwd"].append(mu_fwd)
+        results["mu_bkwd"].append(mu_bkwd)
+        results["mpc_fwd"].append(mpc_fwd)
+        results["mpc_bkwd"].append(mpc_bkwd)
+        results["avg_mpc_fwd"].append(avg_mpc_fwd)
+        results["avg_mpc_bkwd"].append(avg_mpc_bkwd)
 
     if save_results:
         results["mu_fwd"] = np.array(results["mu_fwd"])
@@ -254,7 +268,7 @@ def scalability_test(
         results["mpc_bkwd"] = np.array(results["mpc_bkwd"])
 
         file_name = f"seed={seed}.pt"
-        save_dir = os.path.join(os.path.dirname(__file__), "runs", "scalablity", f"{date.today()}_n={n}_m={m}_set_initial_guess={set_initial_guess}")
+        save_dir = os.path.join(os.path.dirname(__file__), "runs", "scalablity", f"{date.today()}_n={n}_m={m}_H={H}_set_initial_guess={set_initial_guess}")
         file_path = os.path.join(save_dir, file_name)
         os.makedirs(save_dir, exist_ok=True)
 
@@ -266,12 +280,12 @@ if __name__ == '__main__':
 
     seeds = list(range(1))
     exp_dicts = {
-        'set_initial_guess' : {'set_initial_guess':True},
-        'no_initial_guess' : {'set_initial_guess':False},
+        'H=1_set_initial_guess=True_MLP_bounds_2x100' : {'H':1, 'set_initial_guess':True, 'mu_class':'MLP_bounds', 'n_hidden':2, 'hidden_nodes':100},
+        # 'H=1_set_initial_guess=False_MLP_bounds_2x100' : {'H':1, 'set_initial_guess':False, 'mu_class':'MLP_bounds', 'n_hidden':2, 'hidden_nodes':100},
     }
 
-    n_list = [4**i for i in range(1,4)] + [4]*2 + [4**i for i in range(2,4)]
-    m_list = 3*[4] + [4**i for i in range(2,4)] + [4**i for i in range(2,4)]
+    n_list = [2**i for i in range(2,8)] # [4**i for i in range(1,4)] + [4]*2 + [4**i for i in range(2,4)]
+    m_list = n_list # 3*[4] + [4**i for i in range(2,4)] + [4**i for i in range(2,4)]
     # n_list = [2**i for i in range(1,8,2)] + [2]*3 + [2**i for i in range(3,8,2)]
     # m_list = [2]*4 + [2**i for i in range(3,8,2)] + [2**i for i in range(3,8,2)]
     for seed in seeds:
@@ -286,8 +300,6 @@ if __name__ == '__main__':
             else:
                 B = np.diag(np.ones(m))
             A, B = A.astype(np_kwargs['dtype']), B.astype(np_kwargs['dtype'])
-            
-            print(f"A : {A.shape}, B : {B.shape}")
             stable(A)
             controllable(A, B)
 
@@ -303,7 +315,11 @@ if __name__ == '__main__':
             
             for exp_dict in exp_dicts.values():
                 scalability_test(
-                    set_initial_guess = {exp_dict['set_initial_guess']},
+                    H = exp_dict['H'],
+                    set_initial_guess = exp_dict['set_initial_guess'],
+                    n_hidden = exp_dict['n_hidden'],
+                    mu_class = exp_dict['mu_class'],
+                    hidden_nodes = exp_dict['hidden_nodes'],
 
                     seed = seed,
                     batch_size = 256,
