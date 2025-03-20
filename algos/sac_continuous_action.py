@@ -14,6 +14,26 @@ import tyro
 from stable_baselines3.common.buffers import ReplayBuffer
 from torch.utils.tensorboard import SummaryWriter
 
+# neuromancer stuff
+from neuromancer.system import Node, System
+from neuromancer.modules import blocks
+from neuromancer.dynamics import integrators
+from neuromancer.constraint import variable
+from neuromancer.problem import Problem
+from neuromancer.loss import PenaltyLoss
+from neuromancer.dataset import DictDataset
+from neuromancer.trainer import Trainer
+from neuromancer.psl import signals
+import torch.optim as optim
+from torch.utils.data import DataLoader
+
+# MPCritic stuff
+import sys
+sys.path.append('')
+from modules.mpcomponents import QuadraticStageCost, QuadraticTerminalCost, PDQuadraticTerminalCost, LinearDynamics, LinearPolicy
+from modules.mpcritic import MPCritic, InputConcat
+from modules.dynamics import Dynamics
+from modules.dpcontrol import DPControl
 
 @dataclass
 class Args:
@@ -25,9 +45,9 @@ class Args:
     """if toggled, `torch.backends.cudnn.deterministic=False`"""
     cuda: bool = True
     """if toggled, cuda will be enabled by default"""
-    track: bool = False
+    track: bool = True
     """if toggled, this experiment will be tracked with Weights and Biases"""
-    wandb_project_name: str = "cleanRL"
+    wandb_project_name: str = "mpcritic-dev"
     """the wandb's project name"""
     wandb_entity: str = None
     """the entity (team) of wandb's project"""
@@ -35,9 +55,9 @@ class Args:
     """whether to capture videos of the agent performances (check out `videos` folder)"""
 
     # Algorithm specific arguments
-    env_id: str = "Hopper-v4"
+    env_id: str = "Pendulum-v1"
     """the environment id of the task"""
-    total_timesteps: int = 1000000
+    total_timesteps: int = 10000
     """total timesteps of the experiments"""
     num_envs: int = 1
     """the number of parallel game environments"""
@@ -64,6 +84,9 @@ class Args:
     autotune: bool = True
     """automatic tuning of the entropy coefficient"""
 
+    # MPCritic specific arguments
+    critic_mode = "mpcritic"
+    """choose between `mpcritic` or `vanilla`"""
 
 def make_env(env_id, seed, idx, capture_video, run_name):
     def thunk():
@@ -194,26 +217,10 @@ poetry run pip install "stable_baselines3==2.0.0a1"
     )
     assert isinstance(envs.single_action_space, gym.spaces.Box), "only continuous action space is supported"
 
-    max_action = float(envs.single_action_space.high[0])
+    # max_action = float(envs.single_action_space.high[0])
 
     actor = Actor(envs).to(device)
-    qf1 = SoftQNetwork(envs).to(device)
-    qf2 = SoftQNetwork(envs).to(device)
-    qf1_target = SoftQNetwork(envs).to(device)
-    qf2_target = SoftQNetwork(envs).to(device)
-    qf1_target.load_state_dict(qf1.state_dict())
-    qf2_target.load_state_dict(qf2.state_dict())
-    q_optimizer = optim.Adam(list(qf1.parameters()) + list(qf2.parameters()), lr=args.q_lr)
-    actor_optimizer = optim.Adam(list(actor.parameters()), lr=args.policy_lr)
-
-    # Automatic entropy tuning
-    if args.autotune:
-        target_entropy = -torch.prod(torch.Tensor(envs.single_action_space.shape).to(device)).item()
-        log_alpha = torch.zeros(1, requires_grad=True, device=device)
-        alpha = log_alpha.exp().item()
-        a_optimizer = optim.Adam([log_alpha], lr=args.q_lr)
-    else:
-        alpha = args.alpha
+    actor_optimizer = optim.AdamW(list(actor.parameters()), lr=args.policy_lr)
 
     envs.single_observation_space.dtype = np.float32
     rb = ReplayBuffer(
@@ -224,6 +231,53 @@ poetry run pip install "stable_baselines3==2.0.0a1"
         n_envs=args.num_envs,
         handle_timeout_termination=False,
     )
+
+    if args.critic_mode == "vanilla":
+        qf1 = SoftQNetwork(envs).to(device)
+        qf2 = SoftQNetwork(envs).to(device)
+        qf1_target = SoftQNetwork(envs).to(device)
+        qf2_target = SoftQNetwork(envs).to(device)
+        qf1_target.load_state_dict(qf1.state_dict())
+        qf2_target.load_state_dict(qf2.state_dict())
+        q_optimizer = optim.AdamW(list(qf1.parameters()) + list(qf2.parameters()), lr=args.q_lr)
+    elif args.critic_mode == "mpcritic":
+        dpcontrol1 = DPControl(envs, rb=rb, lr=args.q_lr).to(device)
+        dpcontrol2 = DPControl(envs, rb=rb, lr=args.q_lr).to(device)
+        dpcontrol1_target = DPControl(envs, rb=rb, lr=args.q_lr).to(device)
+        dpcontrol2_target = DPControl(envs, rb=rb, lr=args.q_lr).to(device)
+        dpcontrol1_target.load_state_dict(dpcontrol1.state_dict())
+        dpcontrol2_target.load_state_dict(dpcontrol2.state_dict())
+
+        qf1 = MPCritic(dpcontrol1).to(device)
+        qf1.setup_mpc()
+        qf1.requires_grad_(True) # just do it
+        qf1_target = MPCritic(dpcontrol1_target).to(device)
+
+        qf2 = MPCritic(dpcontrol2).to(device)
+        qf2.setup_mpc()
+        qf2.requires_grad_(True) # just do it
+        qf2_target = MPCritic(dpcontrol2_target).to(device)
+
+        qf1_params = list()
+        for p in qf1.critic_parameters.values():
+            qf1_params += list(p.parameters())
+        qf2_params = list()
+        for p in qf2.critic_parameters.values():
+            qf2_params += list(p.parameters())
+
+        q_optimizer = optim.AdamW(qf1_params + qf2_params, lr=args.q_lr) 
+
+
+    # Automatic entropy tuning
+    if args.autotune:
+        target_entropy = -torch.prod(torch.Tensor(envs.single_action_space.shape).to(device)).item()
+        log_alpha = torch.zeros(1, requires_grad=True, device=device)
+        alpha = log_alpha.exp().item()
+        a_optimizer = optim.AdamW([log_alpha], lr=args.q_lr)
+    else:
+        alpha = args.alpha
+
+
     start_time = time.time()
 
     # TRY NOT TO MODIFY: start the game
@@ -278,6 +332,10 @@ poetry run pip install "stable_baselines3==2.0.0a1"
             q_optimizer.zero_grad()
             qf_loss.backward()
             q_optimizer.step()
+
+            if args.critic_mode == "mpcritic" and global_step % 10 == 0:
+                qf1.train_f_mu()
+                qf2.train_f_mu()
 
             if global_step % args.policy_frequency == 0:  # TD 3 Delayed update support
                 for _ in range(
