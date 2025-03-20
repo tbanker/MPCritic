@@ -35,7 +35,6 @@ from modules.mpcritic import MPCritic, InputConcat
 from modules.dynamics import Dynamics
 from modules.dpcontrol import DPControl
 
-
 @dataclass
 class Args:
     exp_name: str = os.path.basename(__file__)[: -len(".py")]
@@ -264,7 +263,6 @@ poetry run pip install "stable_baselines3==2.0.0a1"
 
             qf1_a_values = qf1(data.observations, data.actions).view(-1)
             qf1_loss = F.mse_loss(qf1_a_values, next_q_value)
-
             # optimize the model
             q_optimizer.zero_grad()
             qf1_loss.backward()
