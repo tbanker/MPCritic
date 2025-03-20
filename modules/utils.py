@@ -1,5 +1,6 @@
 import numpy as np
 from scipy.linalg import solve_discrete_are
+from scipy.special import comb, factorial
 import torch
 
 def calc_P(A, B, Q, R):
@@ -43,6 +44,15 @@ def controllable(A, B):
             eig_rank[i] = np.linalg.matrix_rank(M)
         if np.all(eig_rank == n):
             print("Stabilizable")
+
+def calc_ub_N_relu_regions(ns):
+    prod_terms = np.array([(ns[i]/ns[0])**ns[0] for i in range(1,len(ns)-2)])
+    sum_terms = np.array([comb(ns[-2],j) for j in range(ns[0]+1)])
+    return np.prod(prod_terms)*np.sum(sum_terms)
+
+def calc_ub_N_mpc_regions(q):
+    sum_terms = np.array([factorial(k)*q**k for k in range(2**q)])
+    return np.sum(sum_terms)
 
 def fill_rb(rb, envs, obs, policy=None, sampling="Normal", n_samples=1000):
     """ Add samples to RB following Clean-RL  """
