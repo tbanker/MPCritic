@@ -22,7 +22,7 @@ from torch.utils.data import DataLoader
 # MPCritic stuff
 import sys
 sys.path.append('')
-from modules.mpcomponents import QuadraticStageCost, QuadraticTerminalCost, PDQuadraticTerminalCost, LinearDynamics, LinearPolicy
+from modules.mpcomponents import QuadraticStageCost, QuadraticTerminalCost, PDQuadraticTerminalCost, LinearDynamics, LinearPolicy, GoalBias
 from modules.dynamics import Dynamics
 
 
@@ -70,15 +70,19 @@ class DPControl(nn.Module):
         self.V = V if V != None else blocks.MLP(self.nx, 1, bias=True,
                                                           linear_map=torch.nn.Linear, nonlin=torch.nn.ReLU,
                                                           hsizes=[64 for h in range(2)])
+        self.x_bias = GoalBias(self.nx)
+        self.u_bias = GoalBias(self.nu)
 
         self.xlim = xlim # np.array(2,n) 1-upper, 0-lower
         self.ulim = ulim # np.array(2,m) 1-upper, 0-lower
 
+        self.x_bias_node = Node(self.x_bias, ['x'], ['x_bias'])
+        self.u_bias_node = Node(self.u_bias, ['u'], ['u_bias'])
         self.mu_node = Node(self.mu, ['x'], ['u'], name='mu')
         self.dx_node = Node(self.dynamics.dx, ['x','u'],['x'])
-        self.l_node = Node(self.l, ['x','u'],['l'])
-        self.V_node = Node(self.V, ['x'],['V'])
-        self.model = System([self.mu_node, self.dx_node, self.l_node, self.V_node], nsteps=self.H + 2)
+        self.l_node = Node(self.l, ['x_bias','u_bias'],['l'])
+        self.V_node = Node(self.V, ['x_bias'],['V'])
+        self.model = System([self.x_bias_node, self.mu_node, self.u_bias_node, self.dx_node, self.l_node, self.V_node], nsteps=self.H + 2)
         self.model_kwargs = {'dtype' : list(self.model.parameters())[0].dtype,
                              'device' : list(self.model.parameters())[0].device,}
 

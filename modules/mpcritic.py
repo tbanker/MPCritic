@@ -35,21 +35,24 @@ class MPCritic(nn.Module):
 
         self.dpcontrol = dpcontrol
 
-        self.critic_parameters = nn.ParameterDict({'l': self.dpcontrol.l.module, 'V': self.dpcontrol.V})
+        self.critic_parameters = nn.ParameterDict({'l': self.dpcontrol.l.module, 'V': self.dpcontrol.V, 'x_bias': self.dpcontrol.x_bias, 'u_bias': self.dpcontrol.u_bias})
         self.dynamics_parameters = nn.ParameterDict({'f': self.dpcontrol.dynamics.dx.module})
         self.mu_parameters = nn.ParameterDict({'mu': self.dpcontrol.mu})
         self.all_parameters = nn.ParameterDict({'l': self.dpcontrol.l.module, 'V': self.dpcontrol.V,
-                                                 'f': self.dpcontrol.dynamics.dx.module, 'mu': self.dpcontrol.mu})
+                                                'f': self.dpcontrol.dynamics.dx.module, 'mu': self.dpcontrol.mu,
+                                                'x_bias': self.dpcontrol.x_bias, 'u_bias': self.dpcontrol.u_bias})
 
 
         # Configure network
         self.H = self.dpcontrol.H # mpc horizon per do-mpc
+        self.x_bias_node = self.dpcontrol.x_bias_node
+        self.u_bias_node = self.dpcontrol.u_bias_node
         self.dx_node = Node(self.dpcontrol.dynamics.dx, ['x', 'u'], ['x_next'], name='dynamics_model')
         self.mu_node = Node(self.dpcontrol.mu, ['x_next'], ['u'], name='policy')
         self.x_shift = Node(lambda x: x, ['x_next'], ['x'], name='x_shift')
         self.l_node = self.dpcontrol.l_node # Node(concat_cost, ['x', 'u'], ['l'], name='stage_cost')
         self.V_node = self.dpcontrol.V_node # Node(self.mpc_mterm, ['x'], ['V'], name='terminal_cost')
-        self.model = System([self.dx_node, self.mu_node, self.x_shift, self.l_node, self.V_node], nsteps=self.H + 2)
+        self.model = System([self.x_bias_node, self.dx_node, self.mu_node, self.u_bias_node, self.x_shift, self.l_node, self.V_node], nsteps=self.H + 2)
         self.model_kwargs = {'dtype' : list(self.model.parameters())[0].dtype,
                              'device' : list(self.model.parameters())[0].device,}
 
