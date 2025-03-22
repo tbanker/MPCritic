@@ -36,7 +36,7 @@ class InputConcat(torch.nn.Module):
         return self.module(z)
 
 class Dynamics(nn.Module):
-    def __init__(self, env, rb=None, dx=None, opt="Adam", lr=0.001):
+    def __init__(self, env, rb=None, dx=None, opt="AdamW", lr=0.001):
         super().__init__()
 
         self.env = env
@@ -51,7 +51,7 @@ class Dynamics(nn.Module):
         # Configure network
         self.nx = np.array(env.single_observation_space.shape).prod()
         self.nu = np.array(env.single_action_space.shape).prod()
-        self.dx = dx if dx != None else InputConcat(blocks.ResMLP(self.nx + self.nu, self.nx, bias=True,
+        self.dx = dx if dx != None else InputConcat(blocks.MLP(self.nx + self.nu, self.nx, bias=True,
                                                       linear_map=torch.nn.Linear, nonlin=torch.nn.SiLU,
                                                       hsizes=[64 for h in range(2)]))
         self.system_node = Node(self.dx, ['x','u'],['xnext'])
@@ -77,14 +77,15 @@ class Dynamics(nn.Module):
     def forward(self,x,u):
         return self.dx(x,u)
     
-    def train(self, trainer_kwargs=None, n_samples=1000, batch_size=256):
+    def train(self, trainer_kwargs=None, n_samples=1000, batch_size=64):
         train_loader = self._train_loader(n_samples, batch_size)
-        trainer_kwargs = trainer_kwargs if trainer_kwargs != None else {'epochs':1, 'epoch_verbose':1, 'patience':1,}
+        trainer_kwargs = trainer_kwargs if trainer_kwargs != None else {'epochs':1, 'epoch_verbose':10, 'patience':1,}
         trainer = Trainer(self.problem, train_loader,
                           optimizer=self.opt,
                           train_metric='train_loss',
                           eval_metric='train_loss',
                           **trainer_kwargs) # can add a test loss, but the dataset is constantly being updated anyway
+        trainer.current_epoch = 2
         self.best_model = trainer.train() # output is a deepcopy
         return
     

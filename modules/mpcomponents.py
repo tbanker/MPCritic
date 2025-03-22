@@ -12,6 +12,20 @@ class TestModel(nn.Module):
     def forward(self, x):
         return self.p*x
     
+class GoalBias(nn.Module):
+    def __init__(self, n, b=None, lower=None, upper=None):
+        super().__init__()
+        b = torch.rand((1,n), **kwargs) if b is None else torch.from_numpy(b)
+        self.b = nn.Parameter(b, requires_grad=True)
+        self.lower, self.upper = lower, upper
+    
+    def forward(self,input):
+        """x-b"""
+        if self.upper is None and self.lower is None:
+            return input - self.b
+        else:
+            return input - self.clamp(self.b, min=self.lower, max=self.upper)
+                
 class QuadraticStageCost(nn.Module):
     def __init__(self, n, m, Q=None, R=None):
         super().__init__()
@@ -105,7 +119,7 @@ class PDQuadraticTerminalCost(nn.Module):
         super().__init__()
         L = torch.rand((n,n), **kwargs) if L is None else torch.from_numpy(L)
         self.n = n
-        self.L = nn.Parameter(L)
+        self.L = nn.Parameter(L,requires_grad=True)
         self.epsilon = epsilon
         # L shares memory with original numpy array
 

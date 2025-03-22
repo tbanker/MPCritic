@@ -178,6 +178,8 @@ _l4c_generated/
 
 runs/
 wandb/
+videos/
+
 
 *.png
 .DS_Store
