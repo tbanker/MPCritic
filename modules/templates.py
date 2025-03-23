@@ -18,14 +18,14 @@ def template_model(f, n, m, symvar_type='MX'):
     model = do_mpc.model.Model(model_type, symvar_type)
     
     # States struct (optimization variables):
-    _x = model.set_variable(var_type='_x', var_name='x', shape=(n,1)) # (1,n) to align with torch
+    _x = model.set_variable(var_type='_x', var_name='x', shape=(n,1))
 
     # Input struct (optimization variables):
     _u = model.set_variable(var_type='_u', var_name='u', shape=(m,1))
 
     # Define difference equation
     _z = ca.vertcat(_x, _u)
-    x_next = f(_z.T).T
+    x_next = f(_z.T).T # to align with torch model
     model.set_rhs('x', x_next)
 
     # Build the model

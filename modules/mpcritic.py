@@ -35,7 +35,9 @@ class MPCritic(nn.Module):
 
         self.dpcontrol = dpcontrol
 
-        self.critic_parameters = nn.ParameterDict({'l': self.dpcontrol.l.module, 'V': self.dpcontrol.V, 'x_bias': self.dpcontrol.x_bias, 'u_bias': self.dpcontrol.u_bias})
+        self.critic_parameters = nn.ParameterDict({'l': self.dpcontrol.l.module, 'V': self.dpcontrol.V,
+                                                    'x_bias': self.dpcontrol.x_bias, 'u_bias': self.dpcontrol.u_bias,
+                                                    'f': self.dpcontrol.dynamics.dx.module, 'mu': self.dpcontrol.mu})
         self.dynamics_parameters = nn.ParameterDict({'f': self.dpcontrol.dynamics.dx.module})
         self.mu_parameters = nn.ParameterDict({'mu': self.dpcontrol.mu})
         self.all_parameters = nn.ParameterDict({'l': self.dpcontrol.l.module, 'V': self.dpcontrol.V,
@@ -134,19 +136,19 @@ class MPCritic(nn.Module):
         return self.mpc.make_step(x0)
     
     def _update_dynamics(self):
-        self.freeze(self.all_parameters)
-        self.unfreeze(self.dynamics_parameters)
+        # self.freeze(self.all_parameters)
+        # self.unfreeze(self.dynamics_parameters)
         self.dpcontrol.dynamics.train()
-        self.freeze(self.dynamics_parameters)
-        self.unfreeze(self.critic_parameters) # default state should be critic parameters unfrozen
+        # self.freeze(self.dynamics_parameters)
+        # self.unfreeze(self.critic_parameters) # default state should be critic parameters unfrozen
         return
     
     def _update_controller(self):
-        self.freeze(self.all_parameters)
-        self.unfreeze(self.mu_parameters)
+        # self.freeze(self.all_parameters)
+        # self.unfreeze(self.mu_parameters)
         self.dpcontrol.train()
-        self.freeze(self.mu_parameters)
-        self.unfreeze(self.critic_parameters) # default state should be critic parameters unfrozen
+        # self.freeze(self.mu_parameters)
+        # self.unfreeze(self.critic_parameters) # default state should be critic parameters unfrozen
         return
 
     def train_f_mu(self):
@@ -221,6 +223,9 @@ class MPCritic(nn.Module):
         """
         for name, param in param_dict.items():
             param.requires_grad = True
+
+    def _mpc_state(self, x0):
+        return np.float32(np.reshape(x0, self.dpcontrol.env.observation_space.shape[::-1]))
 
 if __name__ == '__main__':
     import os
