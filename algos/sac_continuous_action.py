@@ -55,9 +55,9 @@ class Args:
     """whether to capture videos of the agent performances (check out `videos` folder)"""
 
     # Algorithm specific arguments
-    env_id: str = "Pendulum-v1"
+    env_id: str = "cstr-v0"
     """the environment id of the task"""
-    total_timesteps: int = 10000
+    total_timesteps: int = 100000
     """total timesteps of the experiments"""
     num_envs: int = 1
     """the number of parallel game environments"""
@@ -67,11 +67,11 @@ class Args:
     """the discount factor gamma"""
     tau: float = 0.005
     """target smoothing coefficient (default: 0.005)"""
-    batch_size: int = 256
+    batch_size: int = 64
     """the batch size of sample from the reply memory"""
     learning_starts: int = 5e3
     """timestep to start learning"""
-    policy_lr: float = 3e-4
+    policy_lr: float = 1e-3
     """the learning rate of the policy network optimizer"""
     q_lr: float = 1e-3
     """the learning rate of the Q network network optimizer"""
@@ -88,13 +88,39 @@ class Args:
     critic_mode = "mpcritic"
     """choose between `mpcritic` or `vanilla`"""
 
-def make_env(env_id, seed, idx, capture_video, run_name):
+def make_env(env_id, seed, idx, capture_video, run_name, path):
+    if "cstr" in env_id:
+        from envs.CSTR.template_model import template_model
+        from envs.CSTR.template_mpc import template_mpc
+        from envs.CSTR.template_simulator import template_simulator
+        from envs.DoMPCEnv import DoMPCEnv
+
+        gym.register(
+        id=env_id,
+        entry_point=DoMPCEnv,
+            )  
+
+        model = template_model()
+        max_x = np.array([2.0,2.0,140.0,140.0]).flatten()
+        min_x = np.array([0.1,0.1,50.0,50.0]).flatten() # writing like this to emphasize do-mpc sizing convention
+        max_u = np.array([10.0,0.0]).flatten()
+        min_u = np.array([0.5,-8.50]).flatten()
+        bounds = {'x_low' : min_x, 'x_high' : max_x, 'u_low' : min_u, 'u_high' : max_u}
+        goal_map = lambda x: x[1]
+        num_steps = 50
+        kwargs = {'disable_env_checker': True, 'template_simulator': template_simulator, 'model': model,
+                  'goal_map': goal_map, 'num_steps': num_steps,
+                 'bounds': bounds, 'same_state': None, 'path': path}
+
+    else:
+        kwargs = {}
+
     def thunk():
         if capture_video and idx == 0:
             env = gym.make(env_id, render_mode="rgb_array")
             env = gym.wrappers.RecordVideo(env, f"videos/{run_name}")
         else:
-            env = gym.make(env_id)
+            env = gym.make(env_id, **kwargs)
         env = gym.wrappers.RecordEpisodeStatistics(env)
         env.action_space.seed(seed)
         return env
@@ -212,8 +238,9 @@ poetry run pip install "stable_baselines3==2.0.0a1"
     device = torch.device("cuda" if torch.cuda.is_available() and args.cuda else "cpu")
 
     # env setup
+    exp_path = f"runs/{run_name}/"
     envs = gym.vector.SyncVectorEnv(
-        [make_env(args.env_id, args.seed + i, i, args.capture_video, run_name) for i in range(args.num_envs)]
+        [make_env(args.env_id, args.seed + i, i, args.capture_video, run_name, exp_path) for i in range(args.num_envs)]
     )
     assert isinstance(envs.single_action_space, gym.spaces.Box), "only continuous action space is supported"
 
@@ -249,12 +276,12 @@ poetry run pip install "stable_baselines3==2.0.0a1"
         dpcontrol2_target.load_state_dict(dpcontrol2.state_dict())
 
         qf1 = MPCritic(dpcontrol1).to(device)
-        qf1.setup_mpc()
+        # qf1.setup_mpc()
         qf1.requires_grad_(True) # just do it
         qf1_target = MPCritic(dpcontrol1_target).to(device)
 
         qf2 = MPCritic(dpcontrol2).to(device)
-        qf2.setup_mpc()
+        # qf2.setup_mpc()
         qf2.requires_grad_(True) # just do it
         qf2_target = MPCritic(dpcontrol2_target).to(device)
 
@@ -333,7 +360,7 @@ poetry run pip install "stable_baselines3==2.0.0a1"
             qf_loss.backward()
             q_optimizer.step()
 
-            if args.critic_mode == "mpcritic" and global_step % 10 == 0:
+            if args.critic_mode == "mpcritic" and global_step % 100 == 0:
                 qf1.train_f_mu()
                 qf2.train_f_mu()
 

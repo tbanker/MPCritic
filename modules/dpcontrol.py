@@ -22,7 +22,7 @@ from torch.utils.data import DataLoader
 # MPCritic stuff
 import sys
 sys.path.append('')
-from modules.mpcomponents import QuadraticStageCost, QuadraticTerminalCost, PDQuadraticTerminalCost, LinearDynamics, LinearPolicy, GoalBias
+from modules.mpcomponents import QuadraticStageCost, PDQuadraticStageCost, QuadraticTerminalCost, PDQuadraticTerminalCost, LinearDynamics, LinearPolicy, GoalBias
 from modules.dynamics import Dynamics
 
 
@@ -42,7 +42,7 @@ class InputConcat(torch.nn.Module):
         return self.module(z)
 
 class DPControl(nn.Module):
-    def __init__(self, env, H=1, rb=None, dynamics=None, l=None, V=None, mu=None, xlim=None, ulim=None, loss=None, scale=1.0, opt="AdamW", lr=0.001):
+    def __init__(self, env, H=1, rb=None, dynamics=None, l=None, V=None, mu=None, linear_dynamics=False, xlim=None, ulim=None, loss=None, scale=1.0, opt="AdamW", lr=0.001):
         super().__init__()
 
         self.env = env
@@ -61,11 +61,11 @@ class DPControl(nn.Module):
         self.mu = mu if mu != None else blocks.MLP(self.nx, self.nu, bias=True,
                                                       linear_map=torch.nn.Linear, nonlin=torch.nn.ReLU,
                                                       hsizes=[64 for h in range(2)])
-        self.dynamics = dynamics if dynamics != None else Dynamics(env, rb=rb)
+        self.dynamics = dynamics if dynamics != None else Dynamics(env, rb=rb, linear_dynamics=linear_dynamics)
         self.l = InputConcat(l) if l != None else InputConcat(QuadraticStageCost(self.nx, self.nu))
         # self.l = InputConcat(l) if l != None else InputConcat(blocks.MLP(self.nx + self.nu, 1, bias=True,
         #                                                   linear_map=torch.nn.Linear, nonlin=torch.nn.ReLU,
-        #                                                   hsizes=[64 for h in range(1)]))
+        #                                                   hsizes=[64 for h in range(2)]))
         # self.V = V if V != None else PDQuadraticTerminalCost(self.nx)                                        
         self.V = V if V != None else blocks.MLP(self.nx, 1, bias=True,
                                                           linear_map=torch.nn.Linear, nonlin=torch.nn.ReLU,
@@ -73,8 +73,8 @@ class DPControl(nn.Module):
         self.x_bias = GoalBias(self.nx)
         self.u_bias = GoalBias(self.nu)
 
-        self.xlim = xlim # np.array(2,n) 1-upper, 0-lower
-        self.ulim = ulim # np.array(2,m) 1-upper, 0-lower
+        self.xlim = xlim # np.array(2,n) 0-lower, 1-upper
+        self.ulim = ulim # np.array(2,m) 0-lower, 1-upper
 
         self.x_bias_node = Node(self.x_bias, ['x'], ['x_bias'])
         self.u_bias_node = Node(self.u_bias, ['u'], ['u_bias'])
@@ -105,9 +105,9 @@ class DPControl(nn.Module):
     def forward(self,x):
         return self.mu(x)
     
-    def train(self, trainer_kwargs=None, n_samples=1000, batch_size=256):
+    def train(self, trainer_kwargs=None, n_samples=10000, batch_size=64):
         train_loader = self._train_loader(n_samples, batch_size)
-        trainer_kwargs = trainer_kwargs if trainer_kwargs != None else {'epochs':1, 'epoch_verbose':10, 'patience':1,}
+        trainer_kwargs = trainer_kwargs if trainer_kwargs != None else {'epochs':5, 'epoch_verbose':10, 'patience':1,}
         trainer = Trainer(self.problem, train_loader,
                           optimizer=self.opt,
                           train_metric='train_loss',
