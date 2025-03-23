@@ -360,10 +360,9 @@ poetry run pip install "stable_baselines3==2.0.0a1"
             qf_loss.backward()
             q_optimizer.step()
 
-            # if args.critic_mode == "mpcritic" and global_step % 100 == 0:
-            #     qf1.train_f_mu()
-            #     qf2.train_f_mu()
-
+            if args.critic_mode == "mpcritic" and global_step % 100 == 0:
+                qf1.train_f_mu()
+                qf2.train_f_mu()
 
             if global_step % args.policy_frequency == 0:  # TD 3 Delayed update support
                 for _ in range(
