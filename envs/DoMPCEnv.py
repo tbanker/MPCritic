@@ -214,28 +214,65 @@ if __name__ == '__main__':
 
     import sys
     sys.path.append('')
-    from envs.CSTR.template_model import template_model
-    from envs.CSTR.template_mpc import template_mpc
-    from envs.CSTR.template_simulator import template_simulator
+    # from envs.CSTR.template_model import template_model
+    # from envs.CSTR.template_mpc import template_mpc
+    # from envs.CSTR.template_simulator import template_simulator
+
+    # model = template_model()
+    # mpc = template_mpc(model, mpc_mode="baseline")
+
+    # # simulator = template_simulator(model)
+    # max_x = np.array([2.0,2.0,140.0,140.0]).flatten()
+    # min_x = np.array([0.1,0.1,50.0,50.0]).flatten() # writing like this to emphasize do-mpc sizing convention
+    # max_u = np.array([10.0,0.0]).flatten()
+    # min_u = np.array([0.5,-8.50]).flatten()
+    # bounds = {'x_low' : min_x, 'x_high' : max_x, 'u_low' : min_u, 'u_high' : max_u}
+
+    # # run environment
+    # gym.register(
+    # id="gymnasium_env/DoMPCEnv-v0",
+    # entry_point=DoMPCEnv,
+    #     )  
+    # env = gym.make("gymnasium_env/DoMPCEnv-v0", template_simulator=template_simulator, model=model, bounds=None, same_state=np.array([0.8, 0.4, 134.14, 130.0]))
+    # obs,_ = env.reset(seed=0)
+    # for _ in range(50):
+    #     # a = env.action_space.sample()
+    #     a = mpc.make_step(env.mpc_state(obs))
+    #     obs, reward, terminated, truncated, info = env.step(a)
+    #     print(obs)
+
+    print("Checking QTP")
+
+    from envs.QTP.template_model import template_model
+    from envs.QTP.template_mpc import template_mpc
+    from envs.QTP.template_simulator import template_simulator
 
     model = template_model()
-    mpc = template_mpc(model, mpc_mode="baseline")
+    mpc = template_mpc(model, mpc_mode="nominal", n_horizon=20)
 
     # simulator = template_simulator(model)
-    max_x = np.array([2.0,2.0,140.0,140.0]).flatten()
-    min_x = np.array([0.1,0.1,50.0,50.0]).flatten() # writing like this to emphasize do-mpc sizing convention
-    max_u = np.array([10.0,0.0]).flatten()
-    min_u = np.array([0.5,-8.50]).flatten()
+    max_x = np.array([1.36,1.36,1.3,1.3]).flatten()
+    min_x = np.array([0.2,0.2,0.2,0.2]).flatten() # writing like this to emphasize do-mpc sizing convention
+    max_u = np.array([3.26,4.0]).flatten()
+    min_u = np.array([0.0,0.0]).flatten()
     bounds = {'x_low' : min_x, 'x_high' : max_x, 'u_low' : min_u, 'u_high' : max_u}
+
+    num_steps = 2000
 
     # run environment
     gym.register(
     id="gymnasium_env/DoMPCEnv-v0",
     entry_point=DoMPCEnv,
-        )  
-    env = gym.make("gymnasium_env/DoMPCEnv-v0", template_simulator=template_simulator, model=model, bounds=None, same_state=np.array([0.8, 0.4, 134.14, 130.0]))
+        kwargs = {'num_steps' : num_steps}
+        )
+    same_state = np.array([0.141, 0.112, 0.072, 0.42]) # np.array([0.65, 0.65, 0.652, 0.664])
+    env = gym.make("gymnasium_env/DoMPCEnv-v0", template_simulator=template_simulator, model=model, bounds=None, same_state=same_state)
     obs,_ = env.reset(seed=0)
-    for _ in range(50):
+    
+    mpc.x0 = env.mpc_state(obs)
+    mpc.set_initial_guess()
+    
+    for _ in range(num_steps):
         # a = env.action_space.sample()
         a = mpc.make_step(env.mpc_state(obs))
         obs, reward, terminated, truncated, info = env.step(a)
