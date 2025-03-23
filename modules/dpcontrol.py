@@ -76,13 +76,14 @@ class DPControl(nn.Module):
         self.xlim = xlim # np.array(2,n) 0-lower, 1-upper
         self.ulim = ulim # np.array(2,m) 0-lower, 1-upper
 
-        self.x_bias_node = Node(self.x_bias, ['x'], ['x_bias'])
-        self.u_bias_node = Node(self.u_bias, ['u'], ['u_bias'])
+        # self.x_bias_node = Node(self.x_bias, ['x'], ['x_bias'])
+        # self.u_bias_node = Node(self.u_bias, ['u'], ['u_bias'])
+        self.goal_node = Node(self.goal_map, ['x'], ['z'])
         self.mu_node = Node(self.mu, ['x'], ['u'], name='mu')
         self.dx_node = Node(self.dynamics.dx, ['x','u'],['x'])
-        self.l_node = Node(self.l, ['x_bias','u_bias'],['l'])
-        self.V_node = Node(self.V, ['x_bias'],['V'])
-        self.model = System([self.x_bias_node, self.mu_node, self.u_bias_node, self.dx_node, self.l_node, self.V_node], nsteps=self.H + 2)
+        self.l_node = Node(self.l, ['z','u'],['l'])
+        self.V_node = Node(self.V, ['z'],['V'])
+        self.model = System([self.goal_node, self.mu_node, self.dx_node, self.l_node, self.V_node], nsteps=self.H + 2)
         self.model_kwargs = {'dtype' : list(self.model.parameters())[0].dtype,
                              'device' : list(self.model.parameters())[0].device,}
 

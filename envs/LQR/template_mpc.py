@@ -29,6 +29,7 @@ def template_mpc(model, goal = None, mpc_mode = "nominal", n_horizon = 5, silenc
 
     if silence_solver:
         mpc.settings.supress_ipopt_output()
+        # mpc.settings.solver_options['ipopt.print_level'] = 0
     # see https://coin-or.github.io/Ipopt/OPTIONS.html and https://arxiv.org/pdf/1909.08104
     mpc.nlpsol_opts = {'ipopt.linear_solver': solver} # pardiso, MA27, MA57, spral, HSL_MA86, mumps (mumps is do-mpc default; they also recommend MA27 for a speedup)
 
@@ -36,6 +37,7 @@ def template_mpc(model, goal = None, mpc_mode = "nominal", n_horizon = 5, silenc
     mpc.bounds['upper','_u','u'] = np.ones(m)
 
     if uncertain_params == "nominal": 
+        # assumes n=m
         A = (np.diag(1.01*np.ones(n)) + np.diag(0.01*np.ones(n-1), k=1) + np.diag(0.01*np.ones(n-1), k=-1)).astype(np.float32)
         B = np.diag(np.ones(m)).astype(np.float32)
         P = solve_discrete_are(A, B, q=np.diag(np.ones(n)), r=1000*np.diag(np.ones(m)))

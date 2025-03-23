@@ -34,6 +34,7 @@ from modules.mpcomponents import QuadraticStageCost, QuadraticTerminalCost, PDQu
 from modules.mpcritic import MPCritic, InputConcat
 from modules.dynamics import Dynamics
 from modules.dpcontrol import DPControl
+from modules.utils import calc_K, calc_P
 
 @dataclass
 class Args:
@@ -45,13 +46,13 @@ class Args:
     """if toggled, `torch.backends.cudnn.deterministic=False`"""
     cuda: bool = True
     """if toggled, cuda will be enabled by default"""
-    track: bool = True
+    track: bool = False
     """if toggled, this experiment will be tracked with Weights and Biases"""
     wandb_project_name: str = "mpcritic-dev"
     """the wandb's project name"""
     wandb_entity: str = None
     """the entity (team) of wandb's project"""
-    capture_video: bool = True
+    capture_video: bool = False
     """whether to capture videos of the agent performances (check out `videos` folder)"""
     save_model: bool = False
     """whether to save model into the `runs/{run_name}` folder"""
@@ -61,7 +62,7 @@ class Args:
     """the user or org name of the model repository from the Hugging Face Hub"""
 
     # Algorithm specific arguments
-    env_id: str = "Pendulum-v1" # revisit mujoco install
+    env_id: str = "lqr-v0" # revisit mujoco install
     """the environment id of the Atari game"""
     total_timesteps: int = 50000
     """total timesteps of the experiments"""
@@ -77,29 +78,59 @@ class Args:
     """the batch size of sample from the reply memory"""
     exploration_noise: float = 0.1
     """the scale of exploration noise"""
-    learning_starts: int = 25e3
+    learning_starts: int = 5e2
     """timestep to start learning"""
     policy_frequency: int = 2
     """the frequency of training policy (delayed)"""
     noise_clip: float = 0.5
     """noise clip parameter of the Target Policy Smoothing Regularization"""
 
+    # LQR specific arguments
+    n = 4
+    """state AND action dimension"""
+
     # MPCritic specific arguments
     critic_mode = "mpcritic"
     """choose between `mpcritic` or `vanilla`"""
-    mpc_actor = False
+    mpc_actor = True
     """use mpc actor based on mpcritic, or use a separately trained nn actor"""
     pretrain = True
     """TODO: spend more time optimizing f and mu after initial data collection but before RL training"""
 
 
-def make_env(env_id, seed, idx, capture_video, run_name):
+def make_env(env_id, seed, idx, capture_video, run_name, path):
+    if "lqr" in env_id:
+        from envs.LQR.template_model import template_model
+        from envs.LQR.template_mpc import template_mpc
+        from envs.LQR.template_simulator import template_simulator
+        from envs.DoMPCEnv import DoMPCEnv
+
+        gym.register(
+        id=env_id,
+        entry_point=DoMPCEnv,
+            )  
+
+        model = template_model(n=args.n, m=args.n)
+        max_x = np.ones(args.n).flatten()
+        min_x = -np.ones(args.n).flatten() # writing like this to emphasize do-mpc sizing convention
+        max_u = np.ones(args.n).flatten()
+        min_u = -np.ones(args.n).flatten()
+        bounds = {'x_low' : min_x, 'x_high' : max_x, 'u_low' : min_u, 'u_high' : max_u}
+        num_steps = 50
+        kwargs = {'disable_env_checker': True, 'template_simulator': template_simulator, 'model': model,
+                'num_steps': num_steps, 'bounds': bounds, 'same_state': None,
+                'smooth_reward': False, 'sa_reward': True,
+                'path': path}
+
+    else:
+        kwargs = {}
+    
     def thunk():
         if capture_video and idx == 0:
             env = gym.make(env_id, render_mode="rgb_array")
             env = gym.wrappers.RecordVideo(env, f"videos/{run_name}")
         else:
-            env = gym.make(env_id)
+            env = gym.make(env_id, **kwargs)
         env = gym.wrappers.RecordEpisodeStatistics(env)
         env.action_space.seed(seed)
         return env
@@ -183,7 +214,10 @@ poetry run pip install "stable_baselines3==2.0.0a1"
     device = torch.device("cuda" if torch.cuda.is_available() and args.cuda else "cpu")
 
     # env setup
-    envs = gym.vector.SyncVectorEnv([make_env(args.env_id, args.seed, 0, args.capture_video, run_name)])
+    exp_path = f"runs/{run_name}/"
+    envs = gym.vector.SyncVectorEnv(
+        [make_env(args.env_id, args.seed, 0, args.capture_video, run_name, exp_path)]
+    )
     assert isinstance(envs.single_action_space, gym.spaces.Box), "only continuous action space is supported"
 
     actor = Actor(envs).to(device)
@@ -206,8 +240,27 @@ poetry run pip install "stable_baselines3==2.0.0a1"
         qf1_target.load_state_dict(qf1.state_dict())
         q_optimizer = optim.AdamW(list(qf1.parameters()), lr=args.learning_rate)
     elif args.critic_mode == "mpcritic":
-        dpcontrol = DPControl(envs, linear_dynamics=False, rb=rb, lr=args.learning_rate, ulim=np.array([envs.action_space.low,envs.action_space.high])).to(device)
-        dpcontrol_target = DPControl(envs, linear_dynamics=False, rb=rb, lr=args.learning_rate).to(device)
+        n, m = 4, 4
+        A_env = (np.diag(1.01*np.ones(n)) + np.diag(0.01*np.ones(n-1), k=1) + np.diag(0.01*np.ones(n-1), k=-1)).astype(np.float32)
+        B_env = np.diag(np.ones(m)).astype(np.float32)
+        Q = np.diag(np.ones(n)).astype(np.float32)
+        R = np.diag(np.ones(n)).astype(np.float32)
+
+        K_opt = calc_K(A_env, B_env, Q, R).astype(np.float32)
+        P_opt = calc_P(A_env, B_env, Q, R).astype(np.float32)
+
+        l = QuadraticStageCost(n, m, Q, R)
+        V = QuadraticTerminalCost(n, P_opt)
+        f = LinearDynamics(n, m, A_env, B_env)
+        concat_f = InputConcat(f)
+        dynamics = Dynamics(envs, rb, dx=concat_f, lr=args.learning_rate)        
+        mu = LinearPolicy(n, m, K_opt)
+        dpcontrol = DPControl(envs, rb=rb, mu=mu, dynamics=dynamics, l=l, V=V, lr=args.learning_rate, xlim=np.array([envs.observation_space.low,envs.observation_space.high]), ulim=np.concatenate([envs.action_space.low,envs.action_space.high], axis=0)).to(device)
+        dpcontrol_target = DPControl(envs, rb=rb, mu=mu, dynamics=dynamics, l=l, V=V, lr=args.learning_rate, xlim=np.array([envs.observation_space.low,envs.observation_space.high]), ulim=np.concatenate([envs.action_space.low,envs.action_space.high], axis=0)).to(device)
+        # mu = blocks.MLP_bounds(insize=np.array(envs.single_observation_space.shape).prod(), outsize=np.array(envs.single_action_space.shape).prod(), bias=True, linear_map=torch.nn.Linear, nonlin=torch.nn.ReLU, hsizes=[100 for h in range(2)], min=torch.from_numpy(envs.action_space.low), max=torch.from_numpy(envs.action_space.high))
+        # V = PDQuadraticTerminalCost(np.array(envs.single_observation_space.shape).prod())
+        # dpcontrol = DPControl(envs, mu=mu, linear_dynamics=True, V=V, rb=rb, lr=args.learning_rate, xlim=np.array([envs.observation_space.low,envs.observation_space.high]), ulim=np.concatenate([envs.action_space.low,envs.action_space.high], axis=0)).to(device)
+        # dpcontrol_target = DPControl(envs, mu=mu, linear_dynamics=True, V=V, rb=rb, lr=args.learning_rate, xlim=np.array([envs.observation_space.low,envs.observation_space.high]), ulim=np.concatenate([envs.action_space.low,envs.action_space.high], axis=0)).to(device)
         dpcontrol_target.load_state_dict(dpcontrol.state_dict())
         
         qf1 = MPCritic(dpcontrol).to(device)
@@ -230,10 +283,9 @@ poetry run pip install "stable_baselines3==2.0.0a1"
         else:
             if args.mpc_actor and args.critic_mode=="mpcritic":
                 with torch.no_grad():
-                    actions = torch.tensor(qf1.forward_mpc(qf1._mpc_state(obs)))   
+                    actions = qf1._rl_action(qf1.forward_mpc(qf1._mpc_state(obs)))
             else:
                 with torch.no_grad():
-                    
                     actions = actor(torch.Tensor(obs).to(device))
 
             actions += torch.normal(0, actor.action_scale * args.exploration_noise)
@@ -262,10 +314,7 @@ poetry run pip install "stable_baselines3==2.0.0a1"
 
         # ALGO LOGIC: training.
         if global_step > args.learning_starts:
-
-
             data = rb.sample(args.batch_size)
-
             with torch.no_grad():
                 next_state_actions = target_actor(data.next_observations)
                 qf1_next_target = qf1_target(data.next_observations, next_state_actions)
@@ -273,6 +322,7 @@ poetry run pip install "stable_baselines3==2.0.0a1"
 
             qf1_a_values = qf1(data.observations, data.actions).view(-1)
             qf1_loss = F.mse_loss(qf1_a_values, next_q_value)
+
             # optimize the model
             q_optimizer.zero_grad()
             qf1_loss.backward()
@@ -280,12 +330,13 @@ poetry run pip install "stable_baselines3==2.0.0a1"
 
             if args.critic_mode == "mpcritic":
                 if global_step % 10 == 0:
-                    qf1.requires_grad_(True)
+                    # qf1.requires_grad_(True)
                     qf1.train_f_mu()
                 if args.mpc_actor and (terminations or truncations):
-
                         qf1.online_mpc_update(qf1._mpc_state(obs), full=True)
-
+                        qf1.requires_grad_(True)
+                # qf1.online_mpc_update(qf1._mpc_state(obs), full=True)
+                # qf1.requires_grad_(True)
 
             if global_step % args.policy_frequency == 0:
                 actor_loss = -qf1(data.observations, actor(data.observations)).mean()

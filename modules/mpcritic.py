@@ -225,6 +225,9 @@ class MPCritic(nn.Module):
 
     def _mpc_state(self, x0):
         return np.float32(np.reshape(x0, self.dpcontrol.env.observation_space.shape[::-1]))
+    
+    def _rl_action(self, u0):
+        return torch.from_numpy(np.float32(np.reshape(u0, self.dpcontrol.env.action_space.shape)))
 
 if __name__ == '__main__':
     import os
