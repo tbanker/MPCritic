@@ -88,7 +88,7 @@ class LinearPolicy(nn.Module):
         return x @ self.K.T
 
 class PDQuadraticStageCost(nn.Module):
-    def __init__(self, n, m, Q=None, R=None, epsilon=0.001):
+    def __init__(self, n, m, N=None, M=None, epsilon=0.001):
         super().__init__()
         N = torch.rand((n,n), **kwargs) 
         M = torch.rand((m,m), **kwargs)
@@ -96,6 +96,7 @@ class PDQuadraticStageCost(nn.Module):
         self.m = m
         self.N = nn.Parameter(N)
         self.M = nn.Parameter(M)
+        self.epsilon = epsilon
         # N, M share memory with original numpy arrays
 
     @property

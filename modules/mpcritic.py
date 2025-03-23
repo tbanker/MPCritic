@@ -36,8 +36,7 @@ class MPCritic(nn.Module):
         self.dpcontrol = dpcontrol
 
         self.critic_parameters = nn.ParameterDict({'l': self.dpcontrol.l.module, 'V': self.dpcontrol.V,
-                                                    'x_bias': self.dpcontrol.x_bias, 'u_bias': self.dpcontrol.u_bias,
-                                                    'f': self.dpcontrol.dynamics.dx.module, 'mu': self.dpcontrol.mu})
+                                                    'x_bias': self.dpcontrol.x_bias, 'u_bias': self.dpcontrol.u_bias})
         self.dynamics_parameters = nn.ParameterDict({'f': self.dpcontrol.dynamics.dx.module})
         self.mu_parameters = nn.ParameterDict({'mu': self.dpcontrol.mu})
         self.all_parameters = nn.ParameterDict({'l': self.dpcontrol.l.module, 'V': self.dpcontrol.V,

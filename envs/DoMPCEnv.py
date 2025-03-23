@@ -91,7 +91,7 @@ class DoMPCEnv(gym.Env):
         is_target = np.abs(desired_goal - achieved_goal).sum() < self.goal_tol
 
         if self.smooth_reward:
-            reward = np.exp(-0.5*(np.sum((desired_goal - achieved_goal)**2) / self.goal_tol)**2)
+            reward = np.exp(-0.5*(np.sum((desired_goal - achieved_goal)**2) / self.goal_tol)**2) - 1
             # reward = -0.5*np.abs(desired_goal - achieved_goal).sum()
         else:
             reward = 1*is_target

@@ -59,9 +59,9 @@ class Dynamics(nn.Module):
         elif linear_dynamics:
             self.dx = InputConcat(LinearDynamics(self.nx, self.nu))
         else:
-            self.dx = InputConcat(blocks.ResMLP(self.nx + self.nu, self.nx, bias=True,
+            self.dx = InputConcat(blocks.MLP(self.nx + self.nu, self.nx, bias=True,
                                                         linear_map=torch.nn.Linear, nonlin=torch.nn.ReLU,
-                                                        hsizes=[64 for h in range(2)]))
+                                                        hsizes=[64 for h in range(1)]))
         self.system_node = Node(self.dx, ['x','u'],['xnext'])
         self.x_shift = Node(lambda x: x, ['xnext'], ['x'])
         self.model = System([self.system_node], nstep_key='u') # or nsteps=1
@@ -87,7 +87,7 @@ class Dynamics(nn.Module):
     
     def train(self, trainer_kwargs=None, n_samples=10000, batch_size=64):
         train_loader = self._train_loader(n_samples, batch_size)
-        trainer_kwargs = trainer_kwargs if trainer_kwargs != None else {'epochs':5, 'epoch_verbose':10, 'patience':1,}
+        trainer_kwargs = trainer_kwargs if trainer_kwargs != None else {'epochs':1, 'epoch_verbose':100, 'patience':1}
         trainer = Trainer(self.problem, train_loader,
                           optimizer=self.opt,
                           train_metric='train_loss',

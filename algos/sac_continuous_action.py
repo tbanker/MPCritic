@@ -55,7 +55,7 @@ class Args:
     """whether to capture videos of the agent performances (check out `videos` folder)"""
 
     # Algorithm specific arguments
-    env_id: str = "cstr-v0"
+    env_id: str = "Pendulum-v1"
     """the environment id of the task"""
     total_timesteps: int = 100000
     """total timesteps of the experiments"""
@@ -67,7 +67,7 @@ class Args:
     """the discount factor gamma"""
     tau: float = 0.005
     """target smoothing coefficient (default: 0.005)"""
-    batch_size: int = 64
+    batch_size: int = 256
     """the batch size of sample from the reply memory"""
     learning_starts: int = 5e3
     """timestep to start learning"""
@@ -78,7 +78,7 @@ class Args:
     policy_frequency: int = 2
     """the frequency of training policy (delayed)"""
     target_network_frequency: int = 1  # Denis Yarats' implementation delays this by 2.
-    """the frequency of updates for the target nerworks"""
+    """the frequency of updates for the target networks"""
     alpha: float = 0.2
     """Entropy regularization coefficient."""
     autotune: bool = True
@@ -156,6 +156,7 @@ class Actor(nn.Module):
         super().__init__()
         self.fc1 = nn.Linear(np.array(env.single_observation_space.shape).prod(), 256)
         self.fc2 = nn.Linear(256, 256)
+        # self.fc3 = nn.Linear(256, 256)
         self.fc_mean = nn.Linear(256, np.prod(env.single_action_space.shape))
         self.fc_logstd = nn.Linear(256, np.prod(env.single_action_space.shape))
         # action rescaling
@@ -177,6 +178,7 @@ class Actor(nn.Module):
     def forward(self, x):
         x = F.relu(self.fc1(x))
         x = F.relu(self.fc2(x))
+        # x = F.relu(self.fc3(x))
         mean = self.fc_mean(x)
         log_std = self.fc_logstd(x)
         log_std = torch.tanh(log_std)
@@ -268,10 +270,10 @@ poetry run pip install "stable_baselines3==2.0.0a1"
         qf2_target.load_state_dict(qf2.state_dict())
         q_optimizer = optim.AdamW(list(qf1.parameters()) + list(qf2.parameters()), lr=args.q_lr)
     elif args.critic_mode == "mpcritic":
-        dpcontrol1 = DPControl(envs, rb=rb, lr=args.q_lr).to(device)
-        dpcontrol2 = DPControl(envs, rb=rb, lr=args.q_lr).to(device)
-        dpcontrol1_target = DPControl(envs, rb=rb, lr=args.q_lr).to(device)
-        dpcontrol2_target = DPControl(envs, rb=rb, lr=args.q_lr).to(device)
+        dpcontrol1 = DPControl(envs, rb=rb, lr=args.q_lr, linear_dynamics=False, ulim=np.array([envs.action_space.low,envs.action_space.high])).to(device)
+        dpcontrol2 = DPControl(envs, rb=rb, lr=args.q_lr, linear_dynamics=False, ulim=np.array([envs.action_space.low,envs.action_space.high])).to(device)
+        dpcontrol1_target = DPControl(envs, rb=rb, lr=args.q_lr, linear_dynamics=False, ulim=np.array([envs.action_space.low,envs.action_space.high])).to(device)
+        dpcontrol2_target = DPControl(envs, rb=rb, lr=args.q_lr, linear_dynamics=False, ulim=np.array([envs.action_space.low,envs.action_space.high])).to(device)
         dpcontrol1_target.load_state_dict(dpcontrol1.state_dict())
         dpcontrol2_target.load_state_dict(dpcontrol2.state_dict())
 
@@ -294,7 +296,6 @@ poetry run pip install "stable_baselines3==2.0.0a1"
 
         q_optimizer = optim.AdamW(qf1_params + qf2_params, lr=args.q_lr) 
 
-
     # Automatic entropy tuning
     if args.autotune:
         target_entropy = -torch.prod(torch.Tensor(envs.single_action_space.shape).to(device)).item()
@@ -303,7 +304,6 @@ poetry run pip install "stable_baselines3==2.0.0a1"
         a_optimizer = optim.AdamW([log_alpha], lr=args.q_lr)
     else:
         alpha = args.alpha
-
 
     start_time = time.time()
 

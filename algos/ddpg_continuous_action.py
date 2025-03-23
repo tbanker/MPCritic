@@ -206,8 +206,8 @@ poetry run pip install "stable_baselines3==2.0.0a1"
         qf1_target.load_state_dict(qf1.state_dict())
         q_optimizer = optim.AdamW(list(qf1.parameters()), lr=args.learning_rate)
     elif args.critic_mode == "mpcritic":
-        dpcontrol = DPControl(envs, linear_dynamics=True, rb=rb, lr=args.learning_rate, ulim=np.array([envs.action_space.low,envs.action_space.high])).to(device)
-        dpcontrol_target = DPControl(envs, linear_dynamics=True, rb=rb, lr=args.learning_rate).to(device)
+        dpcontrol = DPControl(envs, linear_dynamics=False, rb=rb, lr=args.learning_rate, ulim=np.array([envs.action_space.low,envs.action_space.high])).to(device)
+        dpcontrol_target = DPControl(envs, linear_dynamics=False, rb=rb, lr=args.learning_rate).to(device)
         dpcontrol_target.load_state_dict(dpcontrol.state_dict())
         
         qf1 = MPCritic(dpcontrol).to(device)
