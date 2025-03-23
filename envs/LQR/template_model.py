@@ -39,9 +39,7 @@ def template_model(n, m, symvar_type='MX'):
     model.set_expression(expr_name='tracking_cost', expr=sum1(_x**2))
 
     # Differential equations (includes rescaling)
-    x_next = model.set_variable(var_type='_z', var_name='x_next', shape=(n,1))
-    model.set_rhs('x', x_next)
-    model.set_alg('x_next', x_next-A@_x-B@_u)
+    model.set_rhs('x', A@_x-B@_u)
 
     # Build the model
     model.setup()
