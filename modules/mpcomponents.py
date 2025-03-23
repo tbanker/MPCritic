@@ -13,10 +13,10 @@ class TestModel(nn.Module):
         return self.p*x
     
 class GoalBias(nn.Module):
-    def __init__(self, n, b=None, lower=None, upper=None):
+    def __init__(self, n, b=None, lower=None, upper=None, requires_grad=True):
         super().__init__()
         b = torch.rand((1,n), **kwargs) if b is None else torch.from_numpy(b)
-        self.b = nn.Parameter(b, requires_grad=True)
+        self.b = nn.Parameter(b, requires_grad=requires_grad)
         self.lower, self.upper = lower, upper
     
     def forward(self,input):
@@ -25,7 +25,29 @@ class GoalBias(nn.Module):
             return input - self.b
         else:
             return input - self.clamp(self.b, min=self.lower, max=self.upper)
-                
+        
+
+class GoalMap(nn.Module):
+    def __init__(self, idx:list=None, goal=0.0):
+        super().__init__()
+        self.idx = idx
+        if idx is not None:
+            self.ny = len(idx)
+        else:
+            self.ny is None
+        self.goal = goal
+
+    def forward(self, input):
+        if self.idx is None:
+            return input
+        else:
+            # print(input[...,self.idx] - self.goal)
+            return input[...,self.idx] - self.goal
+    
+    def forward_env(self, x):
+        return x[self.idx] - self.goal
+
+
 class QuadraticStageCost(nn.Module):
     def __init__(self, n, m, Q=None, R=None):
         super().__init__()

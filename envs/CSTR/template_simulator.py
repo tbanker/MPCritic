@@ -42,8 +42,8 @@ def template_simulator(model, uncertain_params = "nominal", goal=0.60):
 
     params_simulator = {
         'integration_tool': 'cvodes',
-        'abstol': 1e-10,
-        'reltol': 1e-10,
+        'abstol': 1e-4,
+        'reltol': 1e-4,
         't_step': 0.005
     }
 

@@ -6,8 +6,11 @@ import gymnasium as gym
 import numpy as np
 from gymnasium import spaces
 from stable_baselines3.common.env_checker import check_env
+import matplotlib.pyplot as plt
 
 import do_mpc
+from modules.mpcomponents import GoalMap
+
 
 class DoMPCEnv(gym.Env):
     """
@@ -17,13 +20,14 @@ class DoMPCEnv(gym.Env):
     def __init__(self, template_simulator:callable=None, 
                  model:do_mpc.model._model.Model=None,
                  bounds:dict=None, 
-                 goal_map=lambda x: x,
+                 goal_map=None,
                     num_steps=200,
                     clip_reset=None,
                     same_state=None,
                     goal_tol=0.01,
                     uncertain_params = "nominal", # set the uncertainty keyword for template_simulator.py.
                     smooth_reward=True,
+                    episode_plot=None,
                     eval="",
                     path=''):        
         super().__init__()
@@ -34,7 +38,7 @@ class DoMPCEnv(gym.Env):
         self.num_steps = num_steps
         self.clip_reset = clip_reset
         self.same_state = same_state
-        self.goal_map = goal_map
+        self.goal_map = goal_map if goal_map != None else GoalMap()
         self.episode = 0
         self.eval = eval
         self.path=path
@@ -54,7 +58,8 @@ class DoMPCEnv(gym.Env):
         else:
             self.action_space = spaces.Box(low=bounds['u_low'], high=bounds['u_high'], dtype=np.float32)
             self.observation_space = spaces.Box(low=bounds['x_low'], high=bounds['x_high'], dtype=np.float32)
-
+        
+        self.episode_plot = episode_plot
         self.goal_tol = goal_tol
 
     def step(self, action):
@@ -71,7 +76,7 @@ class DoMPCEnv(gym.Env):
 
         return obs, reward, terminated, truncated, info
     
-    def compute_reward(self, achieved_goal, desired_goal, info):
+    def compute_reward(self, achieved_goal, info):
 
         # if type(info) is not dict:
         #     state = [x["full_state"] for x in info]
@@ -88,11 +93,11 @@ class DoMPCEnv(gym.Env):
 
         # print(desired_goal, achieved_goal)
         # print(desired_goal - achieved_goal)
-        is_target = np.abs(desired_goal - achieved_goal).sum() < self.goal_tol
+        is_target = np.abs(achieved_goal).sum() < self.goal_tol
 
         if self.smooth_reward:
-            reward = np.exp(-0.5*(np.sum((desired_goal - achieved_goal)**2) / self.goal_tol)**2) - 1
-            # reward = -0.5*np.abs(desired_goal - achieved_goal).sum()
+            reward = np.exp(-0.5*(np.sum((achieved_goal)**2) / self.goal_tol)**2) - 1
+            # reward = -0.5*np.abs(achieved_goal).sum()
         else:
             reward = 1*is_target
             # reward = 1*is_feasible + 1*is_target # can tune this, but we opt to use mpc for constraint handling
@@ -104,7 +109,8 @@ class DoMPCEnv(gym.Env):
 
         self.episode += 1
 
-        self.goal = 0.6
+        # self.goal = 0.0 # the goal is embedded in goal_map for now)
+        
 
         self.simulator = self._define_simulator()
         self.simulator.reset_history()
@@ -132,15 +138,14 @@ class DoMPCEnv(gym.Env):
             return  self.np_random.uniform(low=self.bounds['x_low'], high=self.bounds['x_high'])
 
     def _get_info(self):
+        reward = self.compute_reward(self.goal_map(self.state), {"full_state": self.state})
 
-        reward = self.compute_reward(self.goal_map(self.state), self.goal, {"full_state": self.state})
-
-        distance = np.linalg.norm(self.goal_map(self.state) - self.goal).item() # possible to set `terminated = distance < 0.0001`
+        distance = np.linalg.norm(self.goal_map(self.state)).item() # possible to set `terminated = distance < 0.0001`
         terminated = False
         # terminated = not self.observation_space.contains(self.state) # again, if one wishes to train rl agent subject to constraints
         truncated = self.t == self.num_steps
 
-        if truncated or terminated:
+        if (truncated or terminated) and self.episode % 10==0: # somewhat expensive to save episodes---only need periodic snapshots
             self.save_episode()
         
         return {"time": self.t, "distance": distance, "reward": reward, "terminated": terminated, "TimeLimit.truncated": truncated, "full_state": self.state}
@@ -152,7 +157,7 @@ class DoMPCEnv(gym.Env):
         return self._env_state(x)
     
     def _define_simulator(self):
-        simulator = self.template_simulator(self.model, uncertain_params=self.uncertain_params, goal=self.goal)
+        simulator = self.template_simulator(self.model, uncertain_params=self.uncertain_params, goal=self.goal_map.goal)
         return simulator
     
     def _env_state(self, x0):
@@ -201,9 +206,13 @@ class DoMPCEnv(gym.Env):
         return
     
     def save_episode(self):
-        
-        do_mpc.data.save_results([self.simulator], result_name=f"{self.eval}" + "episode-" + f"{self.episode}", result_path=self.path)
 
+        do_mpc.data.save_results([self.simulator], result_name=f"{self.eval}" + "episode-" + f"{self.episode}", result_path=self.path)
+        results = do_mpc.data.load_results(self.path+ "/episode-" + f"{self.episode}.pkl")
+        if self.episode_plot is not None:
+            ep_data = self.episode_plot(results['simulator'], path=self.path)
+            plt.savefig(self.path+"/episode-" + f"{self.episode}.png")
+            plt.close(ep_data)
         return
         
     def close(self):

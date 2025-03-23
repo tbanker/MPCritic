@@ -30,7 +30,7 @@ from torch.utils.data import DataLoader
 # MPCritic stuff
 import sys
 sys.path.append('')
-from modules.mpcomponents import QuadraticStageCost, QuadraticTerminalCost, PDQuadraticTerminalCost, LinearDynamics, LinearPolicy
+from modules.mpcomponents import QuadraticStageCost, QuadraticTerminalCost, PDQuadraticTerminalCost, LinearDynamics, LinearPolicy, GoalMap
 from modules.mpcritic import MPCritic, InputConcat
 from modules.dynamics import Dynamics
 from modules.dpcontrol import DPControl
@@ -55,7 +55,7 @@ class Args:
     """whether to capture videos of the agent performances (check out `videos` folder)"""
 
     # Algorithm specific arguments
-    env_id: str = "Pendulum-v1"
+    env_id: str = "cstr-v0"
     """the environment id of the task"""
     total_timesteps: int = 100000
     """total timesteps of the experiments"""
@@ -88,12 +88,13 @@ class Args:
     critic_mode = "mpcritic"
     """choose between `mpcritic` or `vanilla`"""
 
-def make_env(env_id, seed, idx, capture_video, run_name, path):
+def make_env(env_id, seed, idx, capture_video, run_name, path, goal_map):
     if "cstr" in env_id:
         from envs.CSTR.template_model import template_model
         from envs.CSTR.template_mpc import template_mpc
         from envs.CSTR.template_simulator import template_simulator
         from envs.DoMPCEnv import DoMPCEnv
+        from envs.CSTR.cstr_plot import episode_plot
 
         gym.register(
         id=env_id,
@@ -106,10 +107,10 @@ def make_env(env_id, seed, idx, capture_video, run_name, path):
         max_u = np.array([10.0,0.0]).flatten()
         min_u = np.array([0.5,-8.50]).flatten()
         bounds = {'x_low' : min_x, 'x_high' : max_x, 'u_low' : min_u, 'u_high' : max_u}
-        goal_map = lambda x: x[1]
+        goal_map = goal_map
         num_steps = 50
         kwargs = {'disable_env_checker': True, 'template_simulator': template_simulator, 'model': model,
-                  'goal_map': goal_map, 'num_steps': num_steps,
+                  'goal_map': goal_map, 'num_steps': num_steps, 'episode_plot': episode_plot,
                  'bounds': bounds, 'same_state': None, 'path': path}
 
     else:
@@ -141,8 +142,8 @@ class SoftQNetwork(nn.Module):
 
     def forward(self, x, a):
         x = torch.cat([x, a], 1)
-        x = F.relu(self.fc1(x))
-        x = F.relu(self.fc2(x))
+        x = F.silu(self.fc1(x))
+        x = F.silu(self.fc2(x))
         x = self.fc3(x)
         return x
 
@@ -176,9 +177,9 @@ class Actor(nn.Module):
         )
 
     def forward(self, x):
-        x = F.relu(self.fc1(x))
-        x = F.relu(self.fc2(x))
-        # x = F.relu(self.fc3(x))
+        x = F.silu(self.fc1(x))
+        x = F.silu(self.fc2(x))
+        # x = F.silu(self.fc3(x))
         mean = self.fc_mean(x)
         log_std = self.fc_logstd(x)
         log_std = torch.tanh(log_std)
@@ -240,9 +241,13 @@ poetry run pip install "stable_baselines3==2.0.0a1"
     device = torch.device("cuda" if torch.cuda.is_available() and args.cuda else "cpu")
 
     # env setup
+    if "cstr" in args.env_id:
+        goal_map = GoalMap(idx=[1], goal=0.6)
+    else:
+        goal_map = None
     exp_path = f"runs/{run_name}/"
     envs = gym.vector.SyncVectorEnv(
-        [make_env(args.env_id, args.seed + i, i, args.capture_video, run_name, exp_path) for i in range(args.num_envs)]
+        [make_env(args.env_id, args.seed + i, i, args.capture_video, run_name, exp_path, goal_map) for i in range(args.num_envs)]
     )
     assert isinstance(envs.single_action_space, gym.spaces.Box), "only continuous action space is supported"
 
@@ -270,10 +275,17 @@ poetry run pip install "stable_baselines3==2.0.0a1"
         qf2_target.load_state_dict(qf2.state_dict())
         q_optimizer = optim.AdamW(list(qf1.parameters()) + list(qf2.parameters()), lr=args.q_lr)
     elif args.critic_mode == "mpcritic":
-        dpcontrol1 = DPControl(envs, rb=rb, lr=args.q_lr, linear_dynamics=False, ulim=np.array([envs.action_space.low,envs.action_space.high])).to(device)
-        dpcontrol2 = DPControl(envs, rb=rb, lr=args.q_lr, linear_dynamics=False, ulim=np.array([envs.action_space.low,envs.action_space.high])).to(device)
-        dpcontrol1_target = DPControl(envs, rb=rb, lr=args.q_lr, linear_dynamics=False, ulim=np.array([envs.action_space.low,envs.action_space.high])).to(device)
-        dpcontrol2_target = DPControl(envs, rb=rb, lr=args.q_lr, linear_dynamics=False, ulim=np.array([envs.action_space.low,envs.action_space.high])).to(device)
+        # print(envs)
+        # print(envs.get_attr('goal_map'))
+        # goal_map = lambda x: x[1] - 0.6
+        # goal_map = GoalMap(idx=1, goal=0.6)
+
+        ulim = np.array([envs.action_space.low,envs.action_space.high])
+        xlim = np.array([envs.observation_space.low,envs.observation_space.high])
+        dpcontrol1 = DPControl(envs, rb=rb, lr=args.q_lr, linear_dynamics=False, ulim=ulim, xlim=xlim, goal_map=goal_map).to(device)
+        dpcontrol2 = DPControl(envs, rb=rb, lr=args.q_lr, linear_dynamics=False, ulim=ulim, xlim=xlim, goal_map=goal_map).to(device)
+        dpcontrol1_target = DPControl(envs, rb=rb, lr=args.q_lr, linear_dynamics=False, ulim=ulim, xlim=xlim, goal_map=goal_map).to(device)
+        dpcontrol2_target = DPControl(envs, rb=rb, lr=args.q_lr, linear_dynamics=False, ulim=ulim, xlim=xlim, goal_map=goal_map).to(device)
         dpcontrol1_target.load_state_dict(dpcontrol1.state_dict())
         dpcontrol2_target.load_state_dict(dpcontrol2.state_dict())
 
@@ -314,8 +326,9 @@ poetry run pip install "stable_baselines3==2.0.0a1"
         if global_step < args.learning_starts:
             actions = np.array([envs.single_action_space.sample() for _ in range(envs.num_envs)])
         else:
-            actions, _, _ = actor.get_action(torch.Tensor(obs).to(device))
-            actions = actions.detach().cpu().numpy()
+            # actions, _, _ = actor.get_action(torch.Tensor(obs).to(device))
+            # actions = actions.detach().cpu().numpy()
+            actions = qf1.dpcontrol.mu(torch.Tensor(obs).to(device)).detach().cpu().numpy()
 
         # TRY NOT TO MODIFY: execute the game and log data.
         next_obs, rewards, terminations, truncations, infos = envs.step(actions)

@@ -22,7 +22,7 @@ from torch.utils.data import DataLoader
 # MPCritic stuff
 import sys
 sys.path.append('')
-from modules.mpcomponents import QuadraticStageCost, PDQuadraticStageCost, QuadraticTerminalCost, PDQuadraticTerminalCost, LinearDynamics, LinearPolicy, GoalBias
+from modules.mpcomponents import QuadraticStageCost, PDQuadraticStageCost, QuadraticTerminalCost, PDQuadraticTerminalCost, LinearDynamics, LinearPolicy, GoalMap
 from modules.dynamics import Dynamics
 
 
@@ -42,7 +42,7 @@ class InputConcat(torch.nn.Module):
         return self.module(z)
 
 class DPControl(nn.Module):
-    def __init__(self, env, H=1, rb=None, dynamics=None, l=None, V=None, mu=None, linear_dynamics=False, xlim=None, ulim=None, loss=None, scale=10.0, opt="AdamW", lr=0.001):
+    def __init__(self, env, H=5, rb=None, dynamics=None, l=None, V=None, mu=None, goal_map=None, linear_dynamics=False, xlim=None, ulim=None, loss=None, scale=1.0, opt="AdamW", lr=0.001):
         super().__init__()
 
         self.env = env
@@ -58,31 +58,36 @@ class DPControl(nn.Module):
         self.nx = np.array(env.single_observation_space.shape).prod()
         self.nu = np.array(env.single_action_space.shape).prod()
         self.H = H # mpc horizon per do-mpc
+        if goal_map is not None:
+            self.goal_map = goal_map if goal_map != None else GoalMap()
+        self.ny = self.goal_map.ny if self.goal_map.ny != None else self.nx
         self.mu = mu if mu != None else blocks.MLP(self.nx, self.nu, bias=True,
                                                       linear_map=torch.nn.Linear, nonlin=torch.nn.ReLU,
                                                       hsizes=[64 for h in range(2)])
         self.dynamics = dynamics if dynamics != None else Dynamics(env, rb=rb, linear_dynamics=linear_dynamics)
-        self.l = InputConcat(l) if l != None else InputConcat(PDQuadraticStageCost(self.nx, self.nu))
-        # self.l = InputConcat(l) if l != None else InputConcat(blocks.MLP(self.nx + self.nu, 1, bias=True,
+        self.l = InputConcat(l) if l != None else InputConcat(PDQuadraticStageCost(self.ny, self.nu))
+        # self.l = InputConcat(l) if l != None else InputConcat(blocks.MLP(self.ny + self.nu, 1, bias=True,
         #                                                   linear_map=torch.nn.Linear, nonlin=torch.nn.ReLU,
         #                                                   hsizes=[64 for h in range(2)]))
-        # self.V = V if V != None else PDQuadraticTerminalCost(self.nx)                                        
-        self.V = V if V != None else blocks.MLP(self.nx, 1, bias=True,
-                                                          linear_map=torch.nn.Linear, nonlin=torch.nn.ReLU,
-                                                          hsizes=[64 for h in range(2)])
-        self.x_bias = GoalBias(self.nx)
-        self.u_bias = GoalBias(self.nu)
+        self.V = V if V != None else PDQuadraticTerminalCost(self.ny)                                        
+        # self.V = V if V != None else blocks.MLP(self.ny, 1, bias=True,
+        #                                                   linear_map=torch.nn.Linear, nonlin=torch.nn.ReLU,
+        #                                                   hsizes=[64 for h in range(2)])
+        # self.x_bias = GoalBias(self.nx)
+        # self.u_bias = GoalBias(self.nu)
+
 
         self.xlim = xlim # np.array(2,n) 0-lower, 1-upper
         self.ulim = ulim # np.array(2,m) 0-lower, 1-upper
 
-        self.x_bias_node = Node(self.x_bias, ['x'], ['x_bias'])
-        self.u_bias_node = Node(self.u_bias, ['u'], ['u_bias'])
+        # self.x_bias_node = Node(self.x_bias, ['x'], ['x_bias'])
+        # self.u_bias_node = Node(self.u_bias, ['u'], ['u_bias'])
+        self.goal_node = Node(self.goal_map, ['x'], ['z'])
         self.mu_node = Node(self.mu, ['x'], ['u'], name='mu')
         self.dx_node = Node(self.dynamics.dx, ['x','u'],['x'])
-        self.l_node = Node(self.l, ['x_bias','u_bias'],['l'])
-        self.V_node = Node(self.V, ['x_bias'],['V'])
-        self.model = System([self.x_bias_node, self.mu_node, self.u_bias_node, self.dx_node, self.l_node, self.V_node], nsteps=self.H + 2)
+        self.l_node = Node(self.l, ['z','u'],['l'])
+        self.V_node = Node(self.V, ['z'],['V'])
+        self.model = System([self.goal_node, self.mu_node, self.dx_node, self.l_node, self.V_node], nsteps=self.H + 2)
         self.model_kwargs = {'dtype' : list(self.model.parameters())[0].dtype,
                              'device' : list(self.model.parameters())[0].device,}
 
@@ -102,12 +107,12 @@ class DPControl(nn.Module):
         else:
             self.opt = optim.AdamW(self.mu_node.parameters(), lr=lr)
 
-    def forward(self,x):
+    def forward(self,x): 
         return self.mu(x)
     
     def train(self, trainer_kwargs=None, n_samples=10000, batch_size=64):
         train_loader = self._train_loader(n_samples, batch_size)
-        trainer_kwargs = trainer_kwargs if trainer_kwargs != None else {'epochs':1, 'epoch_verbose':5, 'patience':1}
+        trainer_kwargs = trainer_kwargs if trainer_kwargs != None else {'epochs':10, 'epoch_verbose':5, 'patience':1}
         trainer = Trainer(self.problem, train_loader,
                           optimizer=self.opt,
                           train_metric='train_loss',

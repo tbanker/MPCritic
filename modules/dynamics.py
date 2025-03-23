@@ -39,7 +39,7 @@ class InputConcat(torch.nn.Module):
         return self.module(z)
 
 class Dynamics(nn.Module):
-    def __init__(self, env, rb=None, dx=None, linear_dynamics=False, opt="AdamW", lr=0.001):
+    def __init__(self, env, rb=None, dx=None, goal_map=lambda x:x, linear_dynamics=False, opt="AdamW", lr=0.001):
         super().__init__()
 
         self.env = env
@@ -87,7 +87,7 @@ class Dynamics(nn.Module):
     
     def train(self, trainer_kwargs=None, n_samples=10000, batch_size=64):
         train_loader = self._train_loader(n_samples, batch_size)
-        trainer_kwargs = trainer_kwargs if trainer_kwargs != None else {'epochs':1, 'epoch_verbose':100, 'patience':1}
+        trainer_kwargs = trainer_kwargs if trainer_kwargs != None else {'epochs':10, 'epoch_verbose':5, 'patience':1}
         trainer = Trainer(self.problem, train_loader,
                           optimizer=self.opt,
                           train_metric='train_loss',
