@@ -30,7 +30,7 @@ from torch.utils.data import DataLoader
 # MPCritic stuff
 import sys
 sys.path.append('')
-from modules.mpcomponents import QuadraticStageCost, QuadraticTerminalCost, PDQuadraticTerminalCost, LinearDynamics, LinearPolicy
+from modules.mpcomponents import QuadraticStageCost, QuadraticTerminalCost, PDQuadraticTerminalCost, LinearDynamics, LinearPolicy, GoalMap
 from modules.mpcritic import MPCritic, InputConcat
 from modules.dynamics import Dynamics
 from modules.dpcontrol import DPControl
@@ -98,7 +98,7 @@ class Args:
     """TODO: spend more time optimizing f and mu after initial data collection but before RL training"""
 
 
-def make_env(env_id, seed, idx, capture_video, run_name, path):
+def make_env(env_id, seed, idx, capture_video, run_name, path, goal_map):
     if "lqr" in env_id:
         from envs.LQR.template_model import template_model
         from envs.LQR.template_mpc import template_mpc
@@ -116,10 +116,11 @@ def make_env(env_id, seed, idx, capture_video, run_name, path):
         max_u = np.ones(args.n).flatten()
         min_u = -np.ones(args.n).flatten()
         bounds = {'x_low' : min_x, 'x_high' : max_x, 'u_low' : min_u, 'u_high' : max_u}
+        goal_map = goal_map
         num_steps = 50
         kwargs = {'disable_env_checker': True, 'template_simulator': template_simulator, 'model': model,
                 'num_steps': num_steps, 'bounds': bounds, 'same_state': None,
-                'smooth_reward': False, 'sa_reward': True,
+                'goal_map': goal_map, 'smooth_reward': False, 'sa_reward': True,
                 'path': path}
 
     else:
@@ -214,9 +215,13 @@ poetry run pip install "stable_baselines3==2.0.0a1"
     device = torch.device("cuda" if torch.cuda.is_available() and args.cuda else "cpu")
 
     # env setup
+    if "cstr" in args.env_id:
+        goal_map = GoalMap(idx=[1], goal=0.6)
+    else:
+        goal_map = GoalMap()
     exp_path = f"runs/{run_name}/"
     envs = gym.vector.SyncVectorEnv(
-        [make_env(args.env_id, args.seed, 0, args.capture_video, run_name, exp_path)]
+        [make_env(args.env_id, args.seed, 0, args.capture_video, run_name, exp_path, goal_map)]
     )
     assert isinstance(envs.single_action_space, gym.spaces.Box), "only continuous action space is supported"
 
@@ -255,12 +260,12 @@ poetry run pip install "stable_baselines3==2.0.0a1"
         concat_f = InputConcat(f)
         dynamics = Dynamics(envs, rb, dx=concat_f, lr=args.learning_rate)        
         mu = LinearPolicy(n, m, K_opt)
-        dpcontrol = DPControl(envs, rb=rb, mu=mu, dynamics=dynamics, l=l, V=V, lr=args.learning_rate, xlim=np.array([envs.observation_space.low,envs.observation_space.high]), ulim=np.concatenate([envs.action_space.low,envs.action_space.high], axis=0)).to(device)
-        dpcontrol_target = DPControl(envs, rb=rb, mu=mu, dynamics=dynamics, l=l, V=V, lr=args.learning_rate, xlim=np.array([envs.observation_space.low,envs.observation_space.high]), ulim=np.concatenate([envs.action_space.low,envs.action_space.high], axis=0)).to(device)
+        dpcontrol = DPControl(envs, rb=rb, mu=mu, dynamics=dynamics, l=l, V=V, goal_map=goal_map, lr=args.learning_rate, xlim=np.array([envs.observation_space.low,envs.observation_space.high]), ulim=np.concatenate([envs.action_space.low,envs.action_space.high], axis=0)).to(device)
+        dpcontrol_target = DPControl(envs, rb=rb, mu=mu, dynamics=dynamics, l=l, V=V, goal_map=goal_map, lr=args.learning_rate, xlim=np.array([envs.observation_space.low,envs.observation_space.high]), ulim=np.concatenate([envs.action_space.low,envs.action_space.high], axis=0)).to(device)
         # mu = blocks.MLP_bounds(insize=np.array(envs.single_observation_space.shape).prod(), outsize=np.array(envs.single_action_space.shape).prod(), bias=True, linear_map=torch.nn.Linear, nonlin=torch.nn.ReLU, hsizes=[100 for h in range(2)], min=torch.from_numpy(envs.action_space.low), max=torch.from_numpy(envs.action_space.high))
         # V = PDQuadraticTerminalCost(np.array(envs.single_observation_space.shape).prod())
-        # dpcontrol = DPControl(envs, mu=mu, linear_dynamics=True, V=V, rb=rb, lr=args.learning_rate, xlim=np.array([envs.observation_space.low,envs.observation_space.high]), ulim=np.concatenate([envs.action_space.low,envs.action_space.high], axis=0)).to(device)
-        # dpcontrol_target = DPControl(envs, mu=mu, linear_dynamics=True, V=V, rb=rb, lr=args.learning_rate, xlim=np.array([envs.observation_space.low,envs.observation_space.high]), ulim=np.concatenate([envs.action_space.low,envs.action_space.high], axis=0)).to(device)
+        # dpcontrol = DPControl(envs, mu=mu, linear_dynamics=True, V=V, rb=rb, goal_map=goal_map, lr=args.learning_rate, xlim=np.array([envs.observation_space.low,envs.observation_space.high]), ulim=np.concatenate([envs.action_space.low,envs.action_space.high], axis=0)).to(device)
+        # dpcontrol_target = DPControl(envs, mu=mu, linear_dynamics=True, V=V, rb=rb, goal_map=goal_map, lr=args.learning_rate, xlim=np.array([envs.observation_space.low,envs.observation_space.high]), ulim=np.concatenate([envs.action_space.low,envs.action_space.high], axis=0)).to(device)
         dpcontrol_target.load_state_dict(dpcontrol.state_dict())
         
         qf1 = MPCritic(dpcontrol).to(device)
@@ -330,7 +335,7 @@ poetry run pip install "stable_baselines3==2.0.0a1"
 
             if args.critic_mode == "mpcritic":
                 if global_step % 10 == 0:
-                    # qf1.requires_grad_(True)
+                    qf1.requires_grad_(True)
                     qf1.train_f_mu()
                 if args.mpc_actor and (terminations or truncations):
                         qf1.online_mpc_update(qf1._mpc_state(obs), full=True)
