@@ -34,7 +34,7 @@ class GoalMap(nn.Module):
         if idx is not None:
             self.ny = len(idx)
         else:
-            self.ny is None
+            self.ny = None
         self.goal = goal
 
     def forward(self, input):
