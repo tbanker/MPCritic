@@ -14,6 +14,7 @@ import tyro
 from stable_baselines3.common.buffers import ReplayBuffer
 from torch.utils.tensorboard import SummaryWriter
 
+
 # neuromancer stuff
 from neuromancer.system import Node, System
 from neuromancer.modules import blocks
@@ -34,6 +35,8 @@ from modules.mpcomponents import QuadraticStageCost, QuadraticTerminalCost, PDQu
 from modules.mpcritic import MPCritic, InputConcat
 from modules.dynamics import Dynamics
 from modules.dpcontrol import DPControl
+from modules.networks import Actor, Mu
+
 
 @dataclass
 class Args:
@@ -67,7 +70,7 @@ class Args:
     """the discount factor gamma"""
     tau: float = 0.005
     """target smoothing coefficient (default: 0.005)"""
-    batch_size: int = 256
+    batch_size: int = 64
     """the batch size of sample from the reply memory"""
     learning_starts: int = 5e3
     """timestep to start learning"""
@@ -142,64 +145,13 @@ class SoftQNetwork(nn.Module):
 
     def forward(self, x, a):
         x = torch.cat([x, a], 1)
-        x = F.silu(self.fc1(x))
-        x = F.silu(self.fc2(x))
+        x = F.relu(self.fc1(x))
+        x = F.relu(self.fc2(x))
         x = self.fc3(x)
         return x
 
 
-LOG_STD_MAX = 2
-LOG_STD_MIN = -5
 
-
-class Actor(nn.Module):
-    def __init__(self, env):
-        super().__init__()
-        self.fc1 = nn.Linear(np.array(env.single_observation_space.shape).prod(), 256)
-        self.fc2 = nn.Linear(256, 256)
-        # self.fc3 = nn.Linear(256, 256)
-        self.fc_mean = nn.Linear(256, np.prod(env.single_action_space.shape))
-        self.fc_logstd = nn.Linear(256, np.prod(env.single_action_space.shape))
-        # action rescaling
-        self.register_buffer(
-            "action_scale",
-            torch.tensor(
-                (env.single_action_space.high - env.single_action_space.low) / 2.0,
-                dtype=torch.float32,
-            ),
-        )
-        self.register_buffer(
-            "action_bias",
-            torch.tensor(
-                (env.single_action_space.high + env.single_action_space.low) / 2.0,
-                dtype=torch.float32,
-            ),
-        )
-
-    def forward(self, x):
-        x = F.silu(self.fc1(x))
-        x = F.silu(self.fc2(x))
-        # x = F.silu(self.fc3(x))
-        mean = self.fc_mean(x)
-        log_std = self.fc_logstd(x)
-        log_std = torch.tanh(log_std)
-        log_std = LOG_STD_MIN + 0.5 * (LOG_STD_MAX - LOG_STD_MIN) * (log_std + 1)  # From SpinUp / Denis Yarats
-
-        return mean, log_std
-
-    def get_action(self, x):
-        mean, log_std = self(x)
-        std = log_std.exp()
-        normal = torch.distributions.Normal(mean, std)
-        x_t = normal.rsample()  # for reparameterization trick (mean + std * N(0,1))
-        y_t = torch.tanh(x_t)
-        action = y_t * self.action_scale + self.action_bias
-        log_prob = normal.log_prob(x_t)
-        # Enforcing Action Bound
-        log_prob -= torch.log(self.action_scale * (1 - y_t.pow(2)) + 1e-6)
-        log_prob = log_prob.sum(1, keepdim=True)
-        mean = torch.tanh(mean) * self.action_scale + self.action_bias
-        return action, log_prob, mean
 
 
 if __name__ == "__main__":
@@ -280,12 +232,15 @@ poetry run pip install "stable_baselines3==2.0.0a1"
         # goal_map = lambda x: x[1] - 0.6
         # goal_map = GoalMap(idx=1, goal=0.6)
 
+        # mu = Mu(actor)
+        mu = None
+
         ulim = np.array([envs.action_space.low,envs.action_space.high])
         xlim = np.array([envs.observation_space.low,envs.observation_space.high])
-        dpcontrol1 = DPControl(envs, rb=rb, lr=args.q_lr, linear_dynamics=False, ulim=ulim, xlim=xlim, goal_map=goal_map).to(device)
-        dpcontrol2 = DPControl(envs, rb=rb, lr=args.q_lr, linear_dynamics=False, ulim=ulim, xlim=xlim, goal_map=goal_map).to(device)
-        dpcontrol1_target = DPControl(envs, rb=rb, lr=args.q_lr, linear_dynamics=False, ulim=ulim, xlim=xlim, goal_map=goal_map).to(device)
-        dpcontrol2_target = DPControl(envs, rb=rb, lr=args.q_lr, linear_dynamics=False, ulim=ulim, xlim=xlim, goal_map=goal_map).to(device)
+        dpcontrol1 = DPControl(envs, rb=rb, lr=args.q_lr, mu=mu, linear_dynamics=False, ulim=ulim, xlim=xlim, goal_map=goal_map).to(device)
+        dpcontrol2 = DPControl(envs, rb=rb, lr=args.q_lr, mu=mu, linear_dynamics=False, ulim=ulim, xlim=xlim, goal_map=goal_map).to(device)
+        dpcontrol1_target = DPControl(envs, rb=rb, lr=args.q_lr, mu=mu, linear_dynamics=False, ulim=ulim, xlim=xlim, goal_map=goal_map).to(device)
+        dpcontrol2_target = DPControl(envs, rb=rb, lr=args.q_lr, mu=mu, linear_dynamics=False, ulim=ulim, xlim=xlim, goal_map=goal_map).to(device)
         dpcontrol1_target.load_state_dict(dpcontrol1.state_dict())
         dpcontrol2_target.load_state_dict(dpcontrol2.state_dict())
 
@@ -326,9 +281,9 @@ poetry run pip install "stable_baselines3==2.0.0a1"
         if global_step < args.learning_starts:
             actions = np.array([envs.single_action_space.sample() for _ in range(envs.num_envs)])
         else:
-            # actions, _, _ = actor.get_action(torch.Tensor(obs).to(device))
-            # actions = actions.detach().cpu().numpy()
-            actions = qf1.dpcontrol.mu(torch.Tensor(obs).to(device)).detach().cpu().numpy()
+            actions, _, _ = actor.get_action(torch.Tensor(obs).to(device))
+            actions = actions.detach().cpu().numpy()
+            # actions = qf1.dpcontrol.mu(torch.Tensor(obs).to(device)).detach().cpu().numpy() # use to validate mu 
 
         # TRY NOT TO MODIFY: execute the game and log data.
         next_obs, rewards, terminations, truncations, infos = envs.step(actions)
