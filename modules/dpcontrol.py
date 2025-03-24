@@ -42,7 +42,7 @@ class InputConcat(torch.nn.Module):
         return self.module(z)
 
 class DPControl(nn.Module):
-    def __init__(self, env, H=5, rb=None, dynamics=None, l=None, V=None, mu=None, goal_map=None, linear_dynamics=False, xlim=None, ulim=None, loss=None, scale=1.0, opt="AdamW", lr=0.001):
+    def __init__(self, env, H=5, rb=None, dynamics=None, l=None, V=None, mu=None, goal_map=None, linear_dynamics=False, xlim=None, ulim=None, loss=None, scale=10.0, opt="AdamW", lr=0.001):
         super().__init__()
 
         self.env = env
@@ -61,7 +61,7 @@ class DPControl(nn.Module):
         if goal_map is not None:
             self.goal_map = goal_map if goal_map != None else GoalMap()
         self.ny = self.goal_map.ny if self.goal_map.ny != None else self.nx
-        self.mu = mu if mu != None else blocks.MLP(self.nx, self.nu, bias=True,
+        self.mu = mu if mu != None else blocks.ResMLP(self.nx, self.nu, bias=True,
                                                       linear_map=torch.nn.Linear, nonlin=torch.nn.ReLU,
                                                       hsizes=[64 for h in range(2)])
         self.dynamics = dynamics if dynamics != None else Dynamics(env, rb=rb, linear_dynamics=linear_dynamics)
@@ -110,9 +110,9 @@ class DPControl(nn.Module):
     def forward(self,x): 
         return self.mu(x)
     
-    def train(self, trainer_kwargs=None, n_samples=10000, batch_size=64):
+    def train(self, trainer_kwargs=None, n_samples=10000, batch_size=256):
         train_loader = self._train_loader(n_samples, batch_size)
-        trainer_kwargs = trainer_kwargs if trainer_kwargs != None else {'epochs':10, 'epoch_verbose':5, 'patience':1}
+        trainer_kwargs = trainer_kwargs if trainer_kwargs != None else {'epochs':1, 'epoch_verbose':5, 'patience':1}
         trainer = Trainer(self.problem, train_loader,
                           optimizer=self.opt,
                           train_metric='train_loss',

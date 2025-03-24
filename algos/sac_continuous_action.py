@@ -110,7 +110,7 @@ def make_env(env_id, seed, idx, capture_video, run_name, path, goal_map):
         goal_map = goal_map
         num_steps = 50
         kwargs = {'disable_env_checker': True, 'template_simulator': template_simulator, 'model': model,
-                  'goal_map': goal_map, 'num_steps': num_steps, 'episode_plot': episode_plot,
+                  'goal_map': goal_map, 'num_steps': num_steps, 'episode_plot': episode_plot, 'smooth_reward': True,
                  'bounds': bounds, 'same_state': None, 'path': path}
 
     else:
