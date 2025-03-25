@@ -85,6 +85,9 @@ class Args:
     num_iterations: int = 0
     """the number of iterations (computed in runtime)"""
 
+    # MPCritic specific arguments
+    critic_mode = "mpcritic"
+    """choose between `mpcritic` or `vanilla`"""
 
 def make_env(env_id, idx, capture_video, run_name, gamma, path, goal_map):
 
@@ -107,8 +110,9 @@ def make_env(env_id, idx, capture_video, run_name, gamma, path, goal_map):
         min_u = np.array([0.5,-8.50]).flatten()
         bounds = {'x_low' : min_x, 'x_high' : max_x, 'u_low' : min_u, 'u_high' : max_u}
         goal_map = goal_map
-        num_steps = 50
-        kwargs = {'disable_env_checker': True, 'template_simulator': template_simulator, 'model': model,
+        num_steps = 100
+        goal_tol = 0.05
+        kwargs = {'disable_env_checker': True, 'template_simulator': template_simulator, 'model': model, "goal_tol": goal_tol,
                   'goal_map': goal_map, 'num_steps': num_steps, 'episode_plot': episode_plot, 'smooth_reward': True,
                  'bounds': bounds, 'same_state': None, 'path': path}
 
@@ -140,25 +144,47 @@ def layer_init(layer, std=np.sqrt(2), bias_const=0.0):
     return layer
 
 
-class Agent(nn.Module):
-    def __init__(self, envs, rpo_alpha):
-        super().__init__()
-        self.rpo_alpha = rpo_alpha
-        self.critic = nn.Sequential(
+class Actor(nn.Module):
+    def __init__(self, envs):
+        super().__init__()           
+        self.mean = nn.Sequential(
             layer_init(nn.Linear(np.array(envs.single_observation_space.shape).prod(), 64)),
-            nn.Tanh(),
+            nn.ReLU(),
             layer_init(nn.Linear(64, 64)),
-            nn.Tanh(),
-            layer_init(nn.Linear(64, 1), std=1.0),
-        )
-        self.actor_mean = nn.Sequential(
-            layer_init(nn.Linear(np.array(envs.single_observation_space.shape).prod(), 64)),
-            nn.Tanh(),
-            layer_init(nn.Linear(64, 64)),
-            nn.Tanh(),
+            nn.ReLU(),
             layer_init(nn.Linear(64, np.prod(envs.single_action_space.shape)), std=0.01),
         )
-        self.actor_logstd = nn.Parameter(torch.zeros(1, np.prod(envs.single_action_space.shape)))
+        self.logstd = nn.Parameter(torch.zeros(1, np.prod(envs.single_action_space.shape)))
+    def forward(self,x):
+        return self.mean(x)
+
+class Agent(nn.Module):
+    def __init__(self, envs, rpo_alpha, critic=None, actor=None):
+        super().__init__()
+        self.rpo_alpha = rpo_alpha
+        if critic is None:
+            self.critic = nn.Sequential(
+                layer_init(nn.Linear(np.array(envs.single_observation_space.shape).prod(), 64)),
+                nn.Tanh(),
+                layer_init(nn.Linear(64, 64)),
+                nn.Tanh(),
+                layer_init(nn.Linear(64, 1), std=1.0),
+            )
+        else:
+            self.critic = critic
+        if actor is None:
+            # self.actor_mean = nn.Sequential(
+            #     layer_init(nn.Linear(np.array(envs.single_observation_space.shape).prod(), 64)),
+            #     nn.Tanh(),
+            #     layer_init(nn.Linear(64, 64)),
+            #     nn.Tanh(),
+            #     layer_init(nn.Linear(64, np.prod(envs.single_action_space.shape)), std=0.01),
+            # )
+            # self.actor_logstd = nn.Parameter(torch.zeros(1, np.prod(envs.single_action_space.shape)))
+            actor = Actor(envs)
+
+        self.actor_mean = actor.mean
+        self.actor_logstd = actor.logstd
 
     def get_value(self, x):
         return self.critic(x)
@@ -180,6 +206,15 @@ class Agent(nn.Module):
             probs = Normal(action_mean, action_std)
 
         return action, probs.log_prob(action).sum(1), probs.entropy().sum(1), self.critic(x)
+
+class Mu(nn.Module):
+    def __init__(self, agent):
+        super().__init__()
+
+        self.agent = agent
+
+    def forward(self,x):
+        return self.agent.get_deterministic_action(x)
 
 
 if __name__ == "__main__":
@@ -225,8 +260,30 @@ if __name__ == "__main__":
     )
     assert isinstance(envs.single_action_space, gym.spaces.Box), "only continuous action space is supported"
 
-    agent = Agent(envs, args.rpo_alpha).to(device)
-    optimizer = optim.Adam(agent.parameters(), lr=args.learning_rate, eps=1e-5)
+    if args.critic_mode == "vanilla":
+        agent = Agent(envs, args.rpo_alpha).to(device)
+        optimizer = optim.Adam(agent.parameters(), lr=args.learning_rate, eps=1e-5)
+    elif args.critic_mode == "mpcritic":
+        
+        mu = None
+        actor = Actor(envs)
+
+        ulim = np.array([envs.action_space.low,envs.action_space.high])
+        # xlim = np.array([envs.observation_space.low,envs.observation_space.high])
+        xlim = None
+        dpcontrol = DPControl(envs, lr=args.learning_rate, mu=mu, linear_dynamics=False, ulim=ulim, xlim=xlim, goal_map=goal_map).to(device)
+        critic = MPCritic(dpcontrol).to(device)
+        critic.requires_grad_(True) # just do it
+        
+        agent = Agent(envs, args.rpo_alpha, critic=critic, actor=actor).to(device)
+        # for name, param in agent.named_parameters():
+        #     if param.requires_grad:
+        #         print(name, param.data)
+        
+        critic_params = list()
+        for p in critic.critic_parameters.values():
+            critic_params += list(p.parameters())
+        optimizer = optim.Adam(critic_params + list(actor.parameters()), lr=args.learning_rate, eps=1e-5)
 
     # ALGO Logic: Storage setup
     obs = torch.zeros((args.num_steps, args.num_envs) + envs.single_observation_space.shape).to(device)
@@ -259,15 +316,26 @@ if __name__ == "__main__":
             # ALGO LOGIC: action logic
             with torch.no_grad():
                 action, logprob, _, value = agent.get_action_and_value(next_obs)
+                # action = critic.dpcontrol.mu(torch.Tensor(next_obs).to(device)) # use to validate mu 
+                # print(action)
                 values[step] = value.flatten()
             actions[step] = action
             logprobs[step] = logprob
 
             # TRY NOT TO MODIFY: execute the game and log data.
-            next_obs, reward, terminations, truncations, infos = envs.step(action.cpu().numpy())
+            next_obs_temp, reward, terminations, truncations, infos = envs.step(action.cpu().numpy())
             done = np.logical_or(terminations, truncations)
             rewards[step] = torch.tensor(reward).to(device).view(-1)
-            next_obs, next_done = torch.Tensor(next_obs).to(device), torch.Tensor(done).to(device)
+            next_obs, next_done = torch.Tensor(next_obs_temp).to(device), torch.Tensor(done).to(device)
+
+            if args.critic_mode == "mpcritic":
+                # TRY NOT TO MODIFY: save data to reply buffer; handle `final_observation`
+                real_next_obs = next_obs_temp.copy()
+                for idx, trunc in enumerate(truncations):
+                    if trunc:
+                        real_next_obs[idx] = infos["final_observation"][idx]
+                critic.dpcontrol.rb.add(obs[step], real_next_obs, action, reward, terminations, infos)
+
 
             if "final_info" in infos:
                 for info in infos["final_info"]:
@@ -351,10 +419,19 @@ if __name__ == "__main__":
                 nn.utils.clip_grad_norm_(agent.parameters(), args.max_grad_norm)
                 optimizer.step()
 
+            # critic.train_f_mu()
+
             if args.target_kl is not None:
                 if approx_kl > args.target_kl:
                     break
 
+        # TODO best place to put this?
+
+        # if global_step % 100 == 0:
+        #     critic.train_f_mu()
+
+        
+                    
         y_pred, y_true = b_values.cpu().numpy(), b_returns.cpu().numpy()
         var_y = np.var(y_true)
         explained_var = np.nan if var_y == 0 else 1 - np.var(y_true - y_pred) / var_y

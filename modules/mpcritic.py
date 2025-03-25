@@ -35,7 +35,7 @@ class MPCritic(nn.Module):
 
         self.dpcontrol = dpcontrol
 
-        self.critic_parameters = nn.ParameterDict({'l': self.dpcontrol.l.module, 'V': self.dpcontrol.V})
+        self.critic_parameters = nn.ParameterDict({'f': self.dpcontrol.dynamics.dx.module, 'mu': self.dpcontrol.mu, 'l': self.dpcontrol.l.module, 'V': self.dpcontrol.V})
         self.dynamics_parameters = nn.ParameterDict({'f': self.dpcontrol.dynamics.dx.module})
         self.mu_parameters = nn.ParameterDict({'mu': self.dpcontrol.mu})
         self.all_parameters = nn.ParameterDict({'l': self.dpcontrol.l.module, 'V': self.dpcontrol.V,
@@ -149,9 +149,11 @@ class MPCritic(nn.Module):
         # self.unfreeze(self.critic_parameters) # default state should be critic parameters unfrozen
         return
 
-    def train_f_mu(self):
-        self._update_dynamics()
-        self._update_controller()
+    def train_f_mu(self, train_f=True, train_mu=True):
+        if train_f:
+            self._update_dynamics()
+        if train_mu:
+            self._update_controller()
         return
 
     def l4c_update(self):

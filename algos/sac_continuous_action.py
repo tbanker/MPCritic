@@ -112,7 +112,8 @@ def make_env(env_id, seed, idx, capture_video, run_name, path, goal_map):
         bounds = {'x_low' : min_x, 'x_high' : max_x, 'u_low' : min_u, 'u_high' : max_u}
         goal_map = goal_map
         num_steps = 50
-        kwargs = {'disable_env_checker': True, 'template_simulator': template_simulator, 'model': model,
+        goal_tol = 0.05
+        kwargs = {'disable_env_checker': True, 'template_simulator': template_simulator, 'model': model, 'goal_tol': goal_tol,
                   'goal_map': goal_map, 'num_steps': num_steps, 'episode_plot': episode_plot, 'smooth_reward': True,
                  'bounds': bounds, 'same_state': None, 'path': path}
 
@@ -227,16 +228,13 @@ poetry run pip install "stable_baselines3==2.0.0a1"
         qf2_target.load_state_dict(qf2.state_dict())
         q_optimizer = optim.AdamW(list(qf1.parameters()) + list(qf2.parameters()), lr=args.q_lr)
     elif args.critic_mode == "mpcritic":
-        # print(envs)
-        # print(envs.get_attr('goal_map'))
-        # goal_map = lambda x: x[1] - 0.6
-        # goal_map = GoalMap(idx=1, goal=0.6)
 
         # mu = Mu(actor)
         mu = None
 
         ulim = np.array([envs.action_space.low,envs.action_space.high])
-        xlim = np.array([envs.observation_space.low,envs.observation_space.high])
+        # xlim = np.array([envs.observation_space.low,envs.observation_space.high])
+        xlim = None
         dpcontrol1 = DPControl(envs, rb=rb, lr=args.q_lr, mu=mu, linear_dynamics=False, ulim=ulim, xlim=xlim, goal_map=goal_map).to(device)
         dpcontrol2 = DPControl(envs, rb=rb, lr=args.q_lr, mu=mu, linear_dynamics=False, ulim=ulim, xlim=xlim, goal_map=goal_map).to(device)
         dpcontrol1_target = DPControl(envs, rb=rb, lr=args.q_lr, mu=mu, linear_dynamics=False, ulim=ulim, xlim=xlim, goal_map=goal_map).to(device)
@@ -329,8 +327,8 @@ poetry run pip install "stable_baselines3==2.0.0a1"
             q_optimizer.step()
 
             if args.critic_mode == "mpcritic" and global_step % 100 == 0:
-                qf1.train_f_mu()
-                qf2.train_f_mu()
+                qf1.train_f_mu(train_f=False, train_mu=False)
+                qf2.train_f_mu(train_f=False, train_mu=False)
 
             if global_step % args.policy_frequency == 0:  # TD 3 Delayed update support
                 for _ in range(

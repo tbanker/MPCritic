@@ -42,11 +42,11 @@ class InputConcat(torch.nn.Module):
         return self.module(z)
 
 class DPControl(nn.Module):
-    def __init__(self, env, H=10, rb=None, dynamics=None, l=None, V=None, mu=None, goal_map=None, linear_dynamics=False, xlim=None, ulim=None, loss=None, scale=10.0, opt="AdamW", lr=0.001):
+    def __init__(self, env, H=5, rb=None, dynamics=None, l=None, V=None, mu=None, goal_map=None, linear_dynamics=False, xlim=None, ulim=None, loss=None, scale=10.0, opt="AdamW", lr=0.001):
         super().__init__()
 
         self.env = env
-        self.rb = rb if rb != None else ReplayBuffer(int(1e5),
+        self.rb = rb if rb != None else ReplayBuffer(int(1e6),
                                                 env.single_observation_space,
                                                 env.single_action_space,
                                                 device=kwargs['device'],
@@ -61,18 +61,18 @@ class DPControl(nn.Module):
         if goal_map is not None:
             self.goal_map = goal_map if goal_map != None else GoalMap()
         self.ny = self.goal_map.ny if self.goal_map.ny != None else self.nx
-        self.mu = mu if mu != None else blocks.ResMLP(self.nx, self.nu, bias=True,
+        self.mu = mu if mu != None else blocks.MLP(self.nx, self.nu, bias=True,
                                                       linear_map=torch.nn.Linear, nonlin=torch.nn.ReLU,
                                                       hsizes=[64 for h in range(2)])
-        self.dynamics = dynamics if dynamics != None else Dynamics(env, rb=rb, linear_dynamics=linear_dynamics)
+        self.dynamics = dynamics if dynamics != None else Dynamics(env, rb=self.rb, linear_dynamics=linear_dynamics)
         self.l = InputConcat(l) if l != None else InputConcat(PDQuadraticStageCost(self.ny, self.nu))
         # self.l = InputConcat(l) if l != None else InputConcat(blocks.MLP(self.ny + self.nu, 1, bias=True,
         #                                                   linear_map=torch.nn.Linear, nonlin=torch.nn.ReLU,
         #                                                   hsizes=[64 for h in range(2)]))
-        self.V = V if V != None else PDQuadraticTerminalCost(self.ny)                                        
-        # self.V = V if V != None else blocks.MLP(self.ny, 1, bias=True,
-        #                                                   linear_map=torch.nn.Linear, nonlin=torch.nn.ReLU,
-        #                                                   hsizes=[64 for h in range(2)])
+        # self.V = V if V != None else PDQuadraticTerminalCost(self.ny)                                        
+        self.V = V if V != None else blocks.MLP(self.ny, 1, bias=True,
+                                                          linear_map=torch.nn.Linear, nonlin=torch.nn.ReLU,
+                                                          hsizes=[64 for h in range(2)])
         # self.x_bias = GoalBias(self.nx)
         # self.u_bias = GoalBias(self.nu)
 
