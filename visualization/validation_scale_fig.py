@@ -33,7 +33,7 @@ def plot_loss(ax, x, y, yerr, color, leglabels=None, ln_kwargs=prim_ln_kwargs):
 
     return ax
 
-def plot_losses(plotdata0, plotdata1a, plotdata1b, ylabels, xlabel):
+def plot_losses(plotdata0, plotdata1b, ylabels, xlabel):
 
     x0s, y0s, yerr0s, leglabel0s, color0s = plotdata0.values()
     # x1as, y1as, yerr1as, leglabel1as, color1as = plotdata1a.values()
@@ -44,9 +44,6 @@ def plot_losses(plotdata0, plotdata1a, plotdata1b, ylabels, xlabel):
 
     for i, (x, y, yerr, leglabel, color) in enumerate(zip(x0s, y0s, yerr0s, leglabel0s, color0s)):
         plot_loss(axes[0], x, y, yerr, color, leglabel, ln_kwargs=prim_ln_kwargs)
-
-    # for i, (x, y, yerr, leglabel, color) in enumerate(zip(x1as, y1as, yerr1as, leglabel1as, color1as)):
-    #     plot_loss(axes[1], x, y, yerr, color, leglabel, ln_kwargs=prim_ln_kwargs)
 
     for i, (x, y, yerr, leglabel, color) in enumerate(zip(x1bs, y1bs, yerr1bs, leglabel1bs, color1bs)):
         plot_loss(axes[1], x, y, yerr, color, leglabel, ln_kwargs=prim_ln_kwargs)
@@ -71,6 +68,29 @@ def plot_losses(plotdata0, plotdata1a, plotdata1b, ylabels, xlabel):
     fig.supylabel('RMSE', va='baseline')
 
     return fig, axes
+
+def plot_losses(plotdata0, ylabel, xlabel):
+
+    x0s, y0s, yerr0s, leglabel0s, color0s = plotdata0.values()
+
+    fig, ax = plt.subplots(1, 1, figsize=(3.3,2), sharex=True, layout='constrained')
+    ax.ticklabel_format(axis='x', style='sci', scilimits=(0,1))
+
+    for i, (x, y, yerr, leglabel, color) in enumerate(zip(x0s, y0s, yerr0s, leglabel0s, color0s)):
+        plot_loss(ax, x, y, yerr, color, leglabel, ln_kwargs=prim_ln_kwargs)
+
+    ax.set_ylabel(ylabel)
+    ax.set_ylim(bottom=0.)
+    # ax.set_yscale('log')
+
+    ax.set_xlabel(xlabel)
+    # axes[1].set_xlim(left=x[0], right=x[-1])
+    ax.set_xscale('log')
+    ax.set_xlim(right=x[-1])
+
+    ax.legend(loc='upper right', title=r"$n,m$", labelspacing=0.4)
+
+    return fig, ax
 
 if __name__ == '__main__':
     date = '2025-03-20'
@@ -211,24 +231,24 @@ if __name__ == '__main__':
 
     scale = 1e-5
     for i, exp_key in enumerate(exp_keys):
-        AB_str = f"{res_dicts[exp_key]['f_rmses_avg'][-1]/scale:.1f}\pm{2*res_dicts[exp_key]['f_rmses_std'][-1]/scale:.1f}"
-        K_str = f"{res_dicts[exp_key]['K_rmses_avg'][-1]/scale:.1f}\pm{2*res_dicts[exp_key]['K_rmses_std'][-1]/scale:.1f}"
-        P_str = f"{res_dicts[exp_key]['P_rmses_avg'][-1]/scale:.1f}\pm{2*res_dicts[exp_key]['P_rmses_std'][-1]/scale:.1f}"
-        cl_str = f"{res_dicts[exp_key]['cl_rmses_avg'][-1]/scale:.1f}\pm{2*res_dicts[exp_key]['cl_rmses_std'][-1]/scale:.1f}"
-        print(f"${exp_key.split('=')[-1]}$ & ${AB_str}$ & ${K_str}$ & ${P_str}$ \\\\")
-        # print(f"{exp_key}:\n\
+        # AB_str = f"{res_dicts[exp_key]['f_rmses_avg'][-1]/scale:.1f}\pm{2*res_dicts[exp_key]['f_rmses_std'][-1]/scale:.1f}"
+        # K_str = f"{res_dicts[exp_key]['K_rmses_avg'][-1]/scale:.1f}\pm{2*res_dicts[exp_key]['K_rmses_std'][-1]/scale:.1f}"
+        # P_str = f"{res_dicts[exp_key]['P_rmses_avg'][-1]/scale:.1f}\pm{2*res_dicts[exp_key]['P_rmses_std'][-1]/scale:.1f}"
+        # cl_str = f"{res_dicts[exp_key]['cl_rmses_avg'][-1]/scale:.1f}\pm{2*res_dicts[exp_key]['cl_rmses_std'][-1]/scale:.1f}"
+        # print(f"${exp_key.split('=')[-1]}$ & ${AB_str}$ & ${K_str}$ & ${P_str}$ & ${cl_str}$ \\\\")
+        print(f"{exp_key}:\n\
+                A,B rmse: {res_dicts[exp_key]['f_rmses_avg'][-1]:.2e}+-{2*res_dicts[exp_key]['f_rmses_std'][-1]:.2e},\n\
+                K rmse: {res_dicts[exp_key]['K_rmses_avg'][-1]:.2e}+-{2*res_dicts[exp_key]['K_rmses_std'][-1]:.2e},\n\
+                P rmse: {res_dicts[exp_key]['P_rmses_avg'][-1]:.2e}+-{2*res_dicts[exp_key]['P_rmses_std'][-1]:.2e},\n\
+                cl rmse: {res_dicts[exp_key]['cl_rmses_avg'][-1]:.2e}+-{2*res_dicts[exp_key]['cl_rmses_std'][-1]:.2e}\n")
                 # A,B rmse: {res_dicts[exp_key]['f_rmses_avg'][-1]/scale:.1f}\pm{2*res_dicts[exp_key]['f_rmses_std'][-1]/scale:.1f},\n\
                 # K rmse: {res_dicts[exp_key]['K_rmses_avg'][-1]/scale:.1f}\pm{2*res_dicts[exp_key]['K_rmses_std'][-1]/scale:.1f},\n\
                 # P rmse: {res_dicts[exp_key]['P_rmses_avg'][-1]/scale:.1f}\pm{2*res_dicts[exp_key]['P_rmses_std'][-1]/scale:.1f},\n\
                 # cl rmse: {res_dicts[exp_key]['cl_rmses_avg'][-1]/scale:.1f}\pm{2*res_dicts[exp_key]['cl_rmses_std'][-1]/scale:.1f}\n")
-                # A,B rmse: {res_dicts[exp_key]['f_rmses_avg'][-1]:.2e}+-{2*res_dicts[exp_key]['f_rmses_std'][-1]:.2e},\n\
-                # K rmse: {res_dicts[exp_key]['K_rmses_avg'][-1]:.2e}+-{2*res_dicts[exp_key]['K_rmses_std'][-1]:.2e},\n\
-                # P rmse: {res_dicts[exp_key]['P_rmses_avg'][-1]:.2e}+-{2*res_dicts[exp_key]['P_rmses_std'][-1]:.2e},\n\
-                # cl rmse: {res_dicts[exp_key]['cl_rmses_avg'][-1]:.2e}+-{2*res_dicts[exp_key]['cl_rmses_std'][-1]:.2e}\n")
 
-    fig, axes = plot_losses(plotdata0, plotdata1a, plotdata1b, ylabels=["$M$", "$A-BK$"], xlabel='Batch Number')
+    # fig, axes = plot_losses(plotdata0, plotdata1a, plotdata1b, ylabels=["$M$", "$A-BK$"], xlabel='Batch Number')
+    fig, axes = plot_losses(plotdata1b, ylabel="$A-BK$ (RMSE)", xlabel='Batched Learning Steps') # "$||A-BK-(A^{\star}-B^{\star}K^{\star}||_{F})$"
 
-    save_results = True
     save_dir = os.path.join(os.path.dirname(__file__), "validation")
     os.makedirs(save_dir, exist_ok=True)
     fig.savefig(os.path.join(save_dir, f"{date}_validation_scaling"))

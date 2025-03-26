@@ -40,7 +40,7 @@ def template_mpc(model, goal = None, mpc_mode = "nominal", n_horizon = 5, silenc
         # assumes n=m
         A = (np.diag(1.01*np.ones(n)) + np.diag(0.01*np.ones(n-1), k=1) + np.diag(0.01*np.ones(n-1), k=-1)).astype(np.float32)
         B = np.diag(np.ones(m)).astype(np.float32)
-        P = solve_discrete_are(A, B, q=np.diag(np.ones(n)), r=1000*np.diag(np.ones(m)))
+        P = solve_discrete_are(A, B, q=np.diag(np.ones(n)), r=100*np.diag(np.ones(m)))
 
         mpc.set_uncertainty_values(A = [A], B = [B], P = [P])
 

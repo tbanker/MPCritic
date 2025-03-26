@@ -13,7 +13,7 @@ from stable_baselines3.common.buffers import ReplayBuffer
 from dataclasses import dataclass
 
 from modules.templates import LQREnv
-from modules.mpcomponents import QuadraticStageCost, QuadraticTerminalCost, PDQuadraticTerminalCost, LinearDynamics, LinearPolicy
+from modules.mpcomponents import QuadraticStageCost, QuadraticTerminalCost, PDQuadraticTerminalCost, LinearDynamics, LinearPolicy, GoalMap
 from modules.mpcritic import MPCritic, InputConcat
 from modules.dynamics import Dynamics
 from modules.dpcontrol import DPControl
@@ -176,7 +176,7 @@ def validation_test(
     concat_f = InputConcat(f)
     dynamics = Dynamics(envs, rb, dx=concat_f, lr=lr, opt="AdamW")
 
-    dpcontrol = DPControl(envs, H=H, rb=rb, dynamics=dynamics, V=V, l=l, mu=mu, lr=lr, opt="AdamW")
+    dpcontrol = DPControl(envs, H=H, rb=rb, dynamics=dynamics, V=V, l=l, mu=mu, goal_map=GoalMap(), lr=lr, opt="AdamW")
 
     unc_p = {'A' : [A_mpc],
              'B' : [B_mpc]} # 1 uncertainty scenario considered

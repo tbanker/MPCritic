@@ -10,7 +10,7 @@ import do_mpc
 import gymnasium as gym
 
 from modules.templates import template_linear_model, template_linear_simulator, LQREnv
-from modules.mpcomponents import QuadraticStageCost, QuadraticTerminalCost, LinearDynamics, LinearPolicy
+from modules.mpcomponents import QuadraticStageCost, QuadraticTerminalCost, LinearDynamics, LinearPolicy, GoalMap
 from modules.mpcritic import MPCritic, InputConcat
 from modules.dynamics import Dynamics
 from modules.dpcontrol import DPControl
@@ -83,7 +83,7 @@ concat_f = InputConcat(f)
 dynamics = Dynamics(dummy_envs, rb=None, dx=concat_f)
 xlim = np.vstack([-3.*np.ones(n), 3.*np.ones(n)])
 ulim = np.vstack([-np.ones(m), np.ones(m)])
-dpcontrol = DPControl(dummy_envs, H=10, rb=None, dynamics=dynamics, l=l, V=V, mu=mu, xlim=xlim, ulim=ulim)
+dpcontrol = DPControl(dummy_envs, H=10, rb=None, dynamics=dynamics, l=l, V=V, mu=mu, goal_map=GoalMap(), xlim=xlim, ulim=ulim)
 
 critic = MPCritic(dpcontrol, unc_p)
 critic.setup_mpc()
