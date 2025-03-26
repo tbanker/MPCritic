@@ -1,6 +1,8 @@
 """
 A Gym wrapper that serves as the bridge between SB3 and do-mpc
 """
+import sys
+sys.path.append('')
 
 import gymnasium as gym
 import numpy as np
@@ -108,7 +110,7 @@ class DoMPCEnv(gym.Env):
             reward = np.exp(-0.5*(np.sum((achieved_goal)**2) / self.goal_tol)**2) - 1
             # reward = -0.5*np.abs(achieved_goal).sum()
         elif self.sa_reward:
-            reward = -np.sum(self.state**2)-1000*np.sum(self.action**2)
+            reward = -np.sum(self.state**2)-100*np.sum(self.action**2)
         else:
             reward = 1*is_target
             # reward = 1*is_feasible + 1*is_target # can tune this, but we opt to use mpc for constraint handling

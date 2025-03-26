@@ -16,7 +16,7 @@ from stable_baselines3.common.buffers import ReplayBuffer
 from dataclasses import dataclass
 
 from modules.templates import LQREnv, template_LQR_model, template_conLQR_mpc
-from modules.mpcomponents import QuadraticStageCost, QuadraticTerminalCost, LinearDynamics, LinearPolicy
+from modules.mpcomponents import QuadraticStageCost, QuadraticTerminalCost, LinearDynamics, LinearPolicy, GoalMap
 from modules.mpcritic import MPCritic, InputConcat
 from modules.dynamics import Dynamics
 from modules.dpcontrol import DPControl
@@ -187,7 +187,7 @@ def scalability_test(
 
     V = QuadraticTerminalCost(n, P)
     l = QuadraticStageCost(n, m, Q_mpc, R_mpc)
-    dpcontrol = DPControl(envs, H=H, rb=rb, dynamics=dynamics, V=V, l=l, mu=mu, lr=lr, xlim=xlim, ulim=ulim, opt="AdamW")
+    dpcontrol = DPControl(envs, H=H, rb=rb, dynamics=dynamics, V=V, l=l, mu=mu, goal_map=GoalMap(), lr=lr, xlim=xlim, ulim=ulim, opt="AdamW")
     dpcontrol_setup = time.time() - critic_start
     critic = MPCritic(dpcontrol)
     critic_setup = time.time() - critic_start
@@ -308,16 +308,13 @@ if __name__ == '__main__':
     from scipy.linalg import block_diag
 
     # redo seeds 0-2
-    seeds = list(range(50))
+    seeds = [11]+list(range(10))
     exp_dicts = {
         'H=1_set_initial_guess=True_MLP_bounds_2x100' : {'H':1, 'lim':10., 'set_initial_guess':True, 'mu_class':'MLP_bounds', 'n_hidden':2, 'hidden_nodes':100},
-        # 'H=1_set_initial_guess=False_MLP_bounds_2x100' : {'H':1, 'set_initial_guess':False, 'mu_class':'MLP_bounds', 'n_hidden':2, 'hidden_nodes':100},
     }
 
-    n_list = [128] # [2**i for i in range(2,7)] # [4**i for i in range(1,4)] + [4]*2 + [4**i for i in range(2,4)]
-    m_list = n_list # 3*[4] + [4**i for i in range(2,4)] + [4**i for i in range(2,4)]
-    # n_list = [2**i for i in range(1,8,2)] + [2]*3 + [2**i for i in range(3,8,2)]
-    # m_list = [2]*4 + [2**i for i in range(3,8,2)] + [2**i for i in range(3,8,2)]
+    n_list = [2**i for i in range(2,8)]
+    m_list = n_list
     for seed in seeds:
         for n, m in zip(n_list, m_list):
             A = np.diag(1.01*np.ones(n)) + np.diag(0.01*np.ones(n-1), k=1) + np.diag(0.01*np.ones(n-1), k=-1)

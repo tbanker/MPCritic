@@ -7,11 +7,11 @@ if __name__ == '__main__':
     exp_dict = {
         'H':1, 'lim':10., 'set_initial_guess':True, 'mu_class':'MLP_bounds', 'n_hidden':2, 'hidden_nodes':100
     }
-    n_list = [2**i for i in range(2,7)] # [4**i for i in range(1,4)] + [4]*2 + [4**i for i in range(2,4)]
+    n_list = [2**i for i in range(2,8)] # [4**i for i in range(1,4)] + [4]*2 + [4**i for i in range(2,4)]
     m_list = n_list # 3*[4] + [4**i for i in range(2,4)] + [4**i for i in range(2,4)]
     # n_list = [4]*3 + [4**i for i in range(2,4)]
     # m_list = [4**i for i in range(1,4)] + [4**i for i in range(2,4)]
-    seeds = np.arange(5).astype(np.int64)
+    seeds = np.arange(10).astype(np.int64)
 
     # batch_limit = int(4*1e4+2)
     res_dicts = {f"n={n}_m={m}":{
@@ -58,9 +58,11 @@ if __name__ == '__main__':
 
     def scientific_format(string):
         if string[-3] == '-':
-            return string[:3] + "\\times10^{" + string[-3] + string[-1] + "}"
+            # return string[:3] + "\\times10^{" + string[-3] + string[-1] + "}"
+            return string[:3] + "\\cdot10^{" + string[-3] + string[-1] + "}"
         else:
-            return string[:3] + "\\times10^{" + string[-1] + "}"
+            # return string[:3] + "\\times10^{" + string[-1] + "}"
+            return string[:3] + "\\cdot10^{" + string[-1] + "}"
 
     scale = 1
     exp_keys = list(res_dicts.keys())
