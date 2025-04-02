@@ -46,16 +46,18 @@ class DoMPCEnv(gym.Env):
         self.smooth_reward = smooth_reward
         self.sa_reward = sa_reward
         self.bounds = bounds 
+        self.n,_ = model._x.cat.shape
+        self.m,_ = model._u.cat.shape
         if bounds is None:
-            n,_ = model._x.cat.shape
-            m,_ = model._u.cat.shape
+            # n,_ = model._x.cat.shape
+            # m,_ = model._u.cat.shape
             self.observation_space = gym.spaces.Box(
-                low=np.full((n), -np.inf).astype(np.float32), high=np.full((n), np.inf).astype(np.float32),
-                shape=(n,), dtype=np.float32
+                low=np.full((self.n), -np.inf).astype(np.float32), high=np.full((self.n), np.inf).astype(np.float32),
+                shape=(self.n,), dtype=np.float32
             )
             self.action_space = gym.spaces.Box(
-                low=np.full((m), -np.inf).astype(np.float32), high=np.full((m), np.inf).astype(np.float32),
-                shape=(m,), dtype=np.float32
+                low=np.full((self.m), -np.inf).astype(np.float32), high=np.full((self.m), np.inf).astype(np.float32),
+                shape=(self.m,), dtype=np.float32
             )
         else:
             self.action_space = spaces.Box(low=bounds['u_low'], high=bounds['u_high'], dtype=np.float32)
