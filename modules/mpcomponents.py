@@ -1,5 +1,6 @@
 import torch
 import torch.nn as nn
+import numpy as np
 
 kwargs = {'dtype' : torch.float32,
           'device' : 'cpu'}
@@ -18,6 +19,7 @@ class GoalBias(nn.Module):
         b = torch.rand((1,n), **kwargs) if b is None else torch.from_numpy(b)
         self.b = nn.Parameter(b, requires_grad=requires_grad)
         self.lower, self.upper = lower, upper
+        self.ny = n
     
     def forward(self,input):
         """x-b"""
@@ -28,14 +30,18 @@ class GoalBias(nn.Module):
         
 
 class GoalMap(nn.Module):
-    def __init__(self, idx:list=None, goal=0.0):
+    def __init__(self, idx:list=None, goal=0.0, learn_goal=False):
         super().__init__()
         self.idx = idx
         if idx is not None:
             self.ny = len(idx)
         else:
             self.ny = None
-        self.goal = goal
+
+        if learn_goal:
+            self.goal = nn.Parameter(torch.Tensor([goal]), requires_grad=True)
+        else:
+            self.goal = goal
 
     def forward(self, input):
         if self.idx is None:
@@ -47,6 +53,18 @@ class GoalMap(nn.Module):
     def forward_env(self, x):
         return x[self.idx] - self.goal
 
+class GoalConditionedStageCost(nn.Module):
+    def __init__(self, n, m, std=0.5):
+        super().__init__()
+        self.n = n
+        self.m = m
+        self.std = std
+
+    def forward(self, input):
+        """ x^TQx + u^TRu """
+        # L4CasADi models can only have 1 input, not (x,u)
+        x, u = input[..., :self.n], input[..., self.n:]
+        return -torch.exp(-0.5*(x**2).sum(axis=1, keepdims=True) / self.std**2)
 
 class QuadraticStageCost(nn.Module):
     def __init__(self, n, m, Q=None, R=None):
@@ -63,8 +81,8 @@ class QuadraticStageCost(nn.Module):
         """ x^TQx + u^TRu """
         # L4CasADi models can only have 1 input, not (x,u)
         x, u = input[..., :self.n], input[..., self.n:]
-        return (x @ self.Q * x).sum(axis=1, keepdims=True) + (u @ self.R * u).sum(axis=1, keepdims=True)
-    
+        return (x @ self.Q * x).sum(axis=1, keepdims=True) + (u @ self.R * u).sum(axis=1, keepdims=True)  
+
 class QuadraticTerminalCost(nn.Module):
     def __init__(self, n, P=None):
         super().__init__()
