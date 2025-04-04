@@ -188,7 +188,7 @@ if __name__ == "__main__":
     from stable_baselines3.common.buffers import ReplayBuffer
 
     from dynamics import Dynamics
-    from mpcomponents import QuadraticStageCost, QuadraticTerminalCost, LinearDynamics, LinearPolicy
+    from mpcomponents import QuadraticStageCost, QuadraticTerminalCost, LinearDynamics, LinearPolicy, GoalMap
     from templates import LQREnv
     from utils import calc_K, calc_P, fill_rb
 
@@ -302,9 +302,9 @@ if __name__ == "__main__":
     concat_f = InputConcat(f)
     dynamics = Dynamics(envs, rb, dx=concat_f)
 
-    xlim = np.vstack([-np.inf*np.ones(n), np.inf*np.ones(n)])
-    ulim = np.vstack([-np.inf*np.ones(m), np.inf*np.ones(m)])
-    dpcontrol = DPControl(envs, rb, mpc_horizon, dynamics, l, V, mu, xlim=xlim, ulim=ulim, loss='penalty')
+    xlim = np.vstack([-np.ones(n), np.ones(n)])
+    ulim = np.vstack([-np.ones(m), np.ones(m)])
+    dpcontrol = DPControl(envs, rb=rb, H=mpc_horizon, dynamics=dynamics, l=l, V=V, mu=mu, goal_map=GoalMap(), xlim=xlim, ulim=ulim, loss='penalty', scale=10.)
 
     """ Learning ficticious controller """
     K_init = K.copy()

@@ -10,7 +10,8 @@ from do_mpc.graphics import Graphics
 from neuromancer.modules import blocks
 
 sys.path.append('')
-from algos.ddpg_continuous_action import Args, Actor
+# from algos.ddpg_continuous_action import Args, Actor
+from algos.td3_continuous_action import Args, Actor
 from modules.mpcomponents import QuadraticStageCost, QuadraticTerminalCost, PDQuadraticTerminalCost, LinearDynamics, LinearPolicy, GoalMap
 from modules.mpcritic import MPCritic, InputConcat
 from modules.dynamics import Dynamics
@@ -93,8 +94,6 @@ def load_controllers(run_names:dict, envs, global_step=None):
     mu = blocks.MLP_bounds(insize=np.array(envs.single_observation_space.shape).prod(), outsize=np.array(envs.single_action_space.shape).prod(), bias=True, linear_map=torch.nn.Linear, nonlin=torch.nn.ReLU, hsizes=[100 for h in range(2)], min=torch.from_numpy(envs.action_space.low), max=torch.from_numpy(envs.action_space.high))
     dpcontrol = DPControl(envs, H=10, mu=mu, linear_dynamics=True, V=V, rb=None, goal_map=goal_map, lr=args.learning_rate, xlim=np.array([envs.observation_space.low,envs.observation_space.high]), ulim=np.concatenate([envs.action_space.low,envs.action_space.high], axis=0)).to('cpu')
     mpcritic = MPCritic(dpcontrol).to('cpu')
-    # qf1.setup_mpc()
-    # qf1.requires_grad_(True)
     mpcritic_state_dict = torch.load(f"runs/{run_names['mpc']}/mpcritic.pt") if global_step is None else torch.load(f"runs/{run_names['mpc']}/mpcritic{global_step}.pt")
     mpcritic.load_state_dict(mpcritic_state_dict)
     mpcritic.l4c_update()
@@ -151,7 +150,6 @@ def get_mu_preds(controller, x0):
     }
 
 def get_mpc_preds(controller, x0):
-    # controller.setup_mpc()
     x0 = controller._mpc_state(x0)
     controller.mpc.x0 = x0
     controller.forward_mpc(x0)
@@ -160,102 +158,155 @@ def get_mpc_preds(controller, x0):
         '_x' : copy.deepcopy(controller.mpc.data.prediction(('_x', 'x'), -1).T.squeeze()),
         '_u' : copy.deepcopy(controller.mpc.data.prediction(('_u', 'u'), -1).T.squeeze())
     }
-    # return copy.deepcopy(controller.mpc.data)
 
 def plot_traj(datas:dict, labels, colors, dim=0):
 
-    fig, axes = plt.subplots(3, 1, sharex=True, layout='constrained', figsize=(3.3,4), height_ratios=[1,1,2])
+    fig, axes = plt.subplots(2, 1, sharex=True, layout='constrained', figsize=(3.3,3.3), height_ratios=[2,1])
 
     max_s_norm, max_a_norm = 0, 0
-    for key, data in datas.items():
 
-        s_norm = np.linalg.norm(data['_x'], ord=np.inf, axis=1)
-        axes[0].plot(data['_time'], s_norm, label=labels[key], color=colors[key], **prim_ln_kwargs)
+    if type(datas) != list:
+        for key, data in datas.items():
 
-        a_norm = np.linalg.norm(data['_u'], ord=np.inf, axis=1)
-        axes[1].plot(data['_time'], a_norm, label=None, color=colors[key], **prim_ln_kwargs)
+                s_norm = np.linalg.norm(data['_x'], ord=np.inf, axis=1)
+                a_norm = np.linalg.norm(data['_u'], ord=np.inf, axis=1)
+                max_s_norm = np.max(s_norm) if np.max(s_norm) > max_s_norm else max_s_norm
+                max_a_norm = np.max(s_norm) if np.max(s_norm) > max_a_norm else max_a_norm
 
-        max_s_norm = np.max(s_norm) if np.max(s_norm) > max_s_norm else max_s_norm
-        max_a_norm = np.max(s_norm) if np.max(s_norm) > max_a_norm else max_a_norm
+                axes[0].plot(data['_time'], s_norm, label=labels[key], color=colors[key], **prim_ln_kwargs)
+                axes[1].plot(data['_time'], a_norm, label=None, color=colors[key], **prim_ln_kwargs)
+    else:
+        data = datas[0]['mpc']
+        empty_plt_dict = {k:np.zeros_like(datas[0][k]['_time']) for k in datas[0].keys()}
+        min_s_norm_plt = copy.deepcopy(empty_plt_dict)
+        max_s_norm_plt = copy.deepcopy(empty_plt_dict)
+        mean_s_norm_plt = copy.deepcopy(empty_plt_dict)
+        min_a_norm_plt = copy.deepcopy(empty_plt_dict)
+        max_a_norm_plt = copy.deepcopy(empty_plt_dict)
+        mean_a_norm_plt = copy.deepcopy(empty_plt_dict)
+        for key in empty_plt_dict.keys():
+            for s in range(len(datas)):
+                s_norm = np.linalg.norm(datas[s][key]['_x'], ord=np.inf, axis=1, keepdims=True)
+                a_norm = np.linalg.norm(datas[s][key]['_u'], ord=np.inf, axis=1, keepdims=True)
+                max_s_norm = np.max(s_norm) if np.max(s_norm) > max_s_norm else max_s_norm
+                max_a_norm = np.max(a_norm) if np.max(a_norm) > max_a_norm else max_a_norm
+
+                if s == 0:
+                    min_s_norm_plt[key], max_s_norm_plt[key] = s_norm.copy(), s_norm.copy()
+                    min_a_norm_plt[key], max_a_norm_plt[key] = a_norm.copy(), a_norm.copy()
+                else:
+                    min_s_norm_plt[key][s_norm < min_s_norm_plt[key]] = s_norm[s_norm < min_s_norm_plt[key]].copy()
+                    max_s_norm_plt[key][s_norm > max_s_norm_plt[key]] = s_norm[s_norm > max_s_norm_plt[key]].copy()
+                    min_a_norm_plt[key][a_norm < min_a_norm_plt[key]] = a_norm[a_norm < min_a_norm_plt[key]].copy()
+                    max_a_norm_plt[key][a_norm > max_a_norm_plt[key]] = a_norm[a_norm > max_a_norm_plt[key]].copy()
+                mean_s_norm_plt[key] += s_norm/len(datas)
+                mean_a_norm_plt[key] += a_norm/len(datas)
+
+            axes[0].fill_between(data['_time'].flatten(), min_s_norm_plt[key].flatten(), max_s_norm_plt[key].flatten(), color=colors[key], alpha=0.3, step="post")
+            axes[1].fill_between(data['_time'].flatten(), min_a_norm_plt[key].flatten(), max_a_norm_plt[key].flatten(), color=colors[key], alpha=0.3, step="post")
+
+        for s in range(len(datas)):
+            for key, data in datas[s].items():
+
+                label = labels[key] if s==0 else None
+                s_norm = np.linalg.norm(data['_x'], ord=np.inf, axis=1)
+                a_norm = np.linalg.norm(data['_u'], ord=np.inf, axis=1)
+
+                axes[0].step(data['_time'], s_norm, label=label, color=colors[key], alpha=0.5, where='post', **sec_ln_kwargs)
+                axes[1].step(data['_time'], a_norm, label=None, color=colors[key], alpha=0.5, where='post', **sec_ln_kwargs)
+
 
     s_lim = 0.05+max_s_norm if max_s_norm > 1 else 1.05
     a_lim = 0.05+max_a_norm if max_a_norm > 1 else 1.05
-    axes[0].fill_between(datas['mpc']['_time'].flatten(), np.ones_like(datas['mpc']['_time']).flatten(), s_lim*np.ones_like(datas['mpc']['_time']).flatten(), color='r', alpha=0.1)
-    axes[1].fill_between(datas['mpc']['_time'].flatten(), np.ones_like(datas['mpc']['_time']).flatten(), a_lim*np.ones_like(datas['mpc']['_time']).flatten(), color='r', alpha=0.1)
-    axes[2].fill_between(datas['mpc']['_time'].flatten(), np.ones_like(datas['mpc']['_time']).flatten(), s_lim*np.ones_like(datas['mpc']['_time']).flatten(), color='r', alpha=0.1)
-    axes[2].fill_between(datas['mpc']['_time'].flatten(), -np.ones_like(datas['mpc']['_time']).flatten(), -s_lim*np.ones_like(datas['mpc']['_time']).flatten(), color='r', alpha=0.1)
-    # axes[0].plot(datas['mpc']['_time'], np.ones_like(datas['mpc']['_time']), ls='--', color='black')
-    # axes[1].plot(datas['mpc']['_time'], np.ones_like(datas['mpc']['_time']), ls='--', color='black')
-    # axes[2].plot(datas['mpc']['_time'], -np.ones_like(datas['mpc']['_time']), ls='--', color='black')
-    # axes[2].plot(datas['mpc']['_time'], np.ones_like(datas['mpc']['_time']), ls='--', color='black')
+    axes[0].fill_between(data['_time'].flatten(), np.zeros_like(data['_time']).flatten(), np.ones_like(data['_time']).flatten(), color='gainsboro', alpha=0.6, lw=0., zorder=0)
+    axes[1].fill_between(data['_time'].flatten(), np.zeros_like(data['_time']).flatten(), np.ones_like(data['_time']).flatten(), color='gainsboro', alpha=0.6, lw=0., zorder=0)
 
     # switch to mpc traj
-    axes[2].plot(data['_time'], datas['rl']['_x'][:,dim], color=colors['rl'], **prim_ln_kwargs)
-    for t in datas['mpc']['_time'][::3].flatten().astype(np.int64):
-        obs = datas['rl']['_x'][[t]]
-        mpc_data = get_mpc_preds(controllers['mpc'], obs)
-        mu_data = get_mu_preds(controllers['mpc'], obs)
+    # axes[2].plot(data['_time'], datas['rl']['_x'][:,dim], color=colors['rl'], **prim_ln_kwargs)
+    # for t in datas['mpc']['_time'][::3].flatten().astype(np.int64):
+    #     obs = datas['rl']['_x'][[t]]
+    #     mpc_data = get_mpc_preds(controllers['mpc'], obs)
+    #     mu_data = get_mu_preds(controllers['mpc'], obs)
 
-        # predictions
-        # axes[2].plot(np.arange(t,t+len(mpc_data['_x'])), mpc_data['_x'][:,dim], ls=(0,(1,1)), color=colors['mpc'])
-        # axes[2].plot(np.arange(t,t+len(mu_data['_x'])), mu_data['_x'][:,dim], ls=(0,(1,1)), color=colors['mu'])
-        axes[2].plot(np.arange(t,t+len(mpc_data['_x'])), mpc_data['_x'][:,dim], color=colors['mpc'], alpha=0.8, **sec_ln_kwargs)
-        axes[2].plot(np.arange(t,t+len(mu_data['_x'])), mu_data['_x'][:,dim], color=colors['mu'], alpha=0.8, **sec_ln_kwargs)
-        # start and end points
-        axes[2].plot(t, mpc_data['_x'][0,dim], marker='o', ms=2, mfc='none', ls='none', color='black')
-        axes[2].plot(t+len(mpc_data['_x'])-1, mpc_data['_x'][-1,dim], marker='o', ms=2, mfc='none', ls='none', color=colors['mpc'])
-        axes[2].plot(t+len(mu_data['_x'])-1, mu_data['_x'][-1,dim], marker='o', ms=2, mfc='none', ls='none', color=colors['mu'])
-        
-    
+    #     # predictions
+    #     axes[2].plot(np.arange(t,t+len(mpc_data['_x'])), mpc_data['_x'][:,dim], color=colors['mpc'], alpha=0.8, **sec_ln_kwargs)
+    #     axes[2].plot(np.arange(t,t+len(mu_data['_x'])), mu_data['_x'][:,dim], color=colors['mu'], alpha=0.8, **sec_ln_kwargs)
+    #     # start and end points
+    #     axes[2].plot(t, mpc_data['_x'][0,dim], marker='o', ms=2, mfc='none', ls='none', color='black')
+    #     axes[2].plot(t+len(mpc_data['_x'])-1, mpc_data['_x'][-1,dim], marker='o', ms=2, mfc='none', ls='none', color=colors['mpc'])
+    #     axes[2].plot(t+len(mu_data['_x'])-1, mu_data['_x'][-1,dim], marker='o', ms=2, mfc='none', ls='none', color=colors['mu'])
 
-    axes[0].set_xlim(datas['mpc']['_time'][0], datas['mpc']['_time'][-1])
+    axes[0].set_xlim(data['_time'][0], data['_time'][-1])
     axes[0].set_ylim(0,s_lim)
-    axes[0].set_ylabel(r'$||s||_{\infty}$')
-
+    axes[0].set_yticks([0,1])
+    axes[0].set_yticklabels(['0','1'])
+    axes[0].set_ylabel(r'$\Vert s_{t} \Vert_{\infty}$')
     axes[1].set_ylim(0,a_lim)
-    axes[1].set_ylabel(r'$||a||_{\infty}$')
-
-    axes[2].set_ylim(-s_lim,s_lim)
-    axes[2].set_ylabel(f'$s_{dim}$')
-
+    axes[1].set_yticks([0,1])
+    axes[1].set_yticklabels(['0','1'])
+    axes[1].set_ylabel(r'$\Vert a_{t} \Vert_{\infty}$')
+    # axes[2].set_ylim(-s_lim,s_lim)
+    # axes[2].set_ylabel(f'$s_{dim}$')
     axes[-1].set_xlabel(r'$t$')
 
-    axes[0].legend(ncols=3, loc='upper center', bbox_to_anchor=(0.5,1.5))
+    axes[0].legend(ncols=3, loc='upper center', columnspacing=1.)
 
     return fig, axes
 
 
 if __name__ == '__main__':
     
-    args = Args()
-    args.seed = 2
-    date = '2025-03-24'
-    run_time_mpcritic = 1742940149 # (50001 steps)
-    run_time_rl = 1742950624 # (50001 steps)
-    global_step = 30000
-    run_names = {
-        'mpc' : f"{args.env_id}__{args.exp_name}__{args.seed}__{run_time_mpcritic}",
-        'rl'       : f"{args.env_id}__{args.exp_name}__{args.seed}__{run_time_rl}",
+    date = '2025-03-28'
+    num_steps = 11
+
+    """ Plot different seeds """
+    global_step = None
+    runs = {
+        '1'  : [1743222882, 1743221115],
+        '2'  : [1743232317, 1743221236],
+        '3'  : [1743242050, 1743221356],
+        '4'  : [1743251979, 1743221476],
+        '5'  : [1743262112, 1743221599],
+        '6'  : [1743272856, 1743221719],
+        '7'  : [1743285714, 1743221841],
+        '8'  : [1743296735, 1743221962],
+        '9'  : [1743308000, 1743222086],
+        '10' : [1743319284, 1743222208],
     }
 
+    run_datas = []
+    same_state = np.array([-0.885, 0.742, -0.659, -0.784])
 
-    for _ in range(200):
-        same_state = np.random.uniform(-1,1,4) # 0.9*np.ones(4)
-        num_steps = 50
+    """ Plot different global steps """
+    # seed = 1
+    # global_steps = list(range(0,50001,10000))
+    # mpc_run_timetime = 1743112746
+    # rl_run_timetime = 1743111242
+    # runs = {global_step:[mpc_run_timetime, rl_run_timetime] for global_step in global_steps}
+
+    for seed, times in runs.items():
+    # for global_step, times in runs.items():
+        args = Args()
+        args.seed = int(seed)
+        run_names = {
+            'mpc' : f"{args.env_id}__{args.exp_name}__{args.seed}__{times[0]}",
+            'rl'       : f"{args.env_id}__{args.exp_name}__{args.seed}__{times[1]}",
+        }
         
         envs = make_envs(args, same_state, num_steps)
         controllers = load_controllers(run_names, envs['mpc'], global_step=global_step)
 
         datas, episodic_rewards = get_traj_datas(controllers, envs, num_steps, args)
+        run_datas.append(datas)
         
-        colors = {k:f'C{i}' for i, k in enumerate(controllers.keys())}
-        labels = {'mpc':r'$\pi^{\text{MPC}}$', 'rl':r'$\pi^{\text{DNN}}$', 'mu':r'$\mu$'}
-        fig, axes = plot_traj(datas, labels, colors, dim=0)
+    colors = {'mpc': 'C0', 'rl': 'C1', 'mu': 'darkslategrey'}
+    labels = {'mpc':r'$\pi^{\text{MPC}}$', 'rl':r'$\pi^{\text{DNN}}$', 'mu':r'$\mu$'}
+    fig, axes = plot_traj(datas=run_datas, labels=labels, colors=colors, dim=0)
 
-        save_dir = os.path.join(os.path.dirname(__file__), "LQR")
-        os.makedirs(save_dir, exist_ok=True)
-        fig.savefig(os.path.join(save_dir, f"{date}_LQR_traj_{np.round(same_state,3).tolist()}.png"))
+    save_dir = os.path.join(os.path.dirname(__file__), "LQR")
+    os.makedirs(save_dir, exist_ok=True)
+    fig.savefig(os.path.join(save_dir, f"{date}_LQR_traj_{np.round(same_state,3).tolist()}.png"))
 
-        print(same_state)
-        for label, episodic_reward in zip(labels, episodic_rewards.values()):
-            print(f"{label}: R={episodic_reward}")
+    print(same_state)
+    for label, episodic_reward in zip(labels, episodic_rewards.values()):
+        print(f"{label}: R={episodic_reward}")

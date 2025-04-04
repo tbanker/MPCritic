@@ -7,10 +7,8 @@ if __name__ == '__main__':
     exp_dict = {
         'H':1, 'lim':10., 'set_initial_guess':True, 'mu_class':'MLP_bounds', 'n_hidden':2, 'hidden_nodes':100
     }
-    n_list = [2**i for i in range(2,8)] # [4**i for i in range(1,4)] + [4]*2 + [4**i for i in range(2,4)]
-    m_list = n_list # 3*[4] + [4**i for i in range(2,4)] + [4**i for i in range(2,4)]
-    # n_list = [4]*3 + [4**i for i in range(2,4)]
-    # m_list = [4**i for i in range(1,4)] + [4**i for i in range(2,4)]
+    n_list = [2**i for i in range(2,8)]
+    m_list = n_list
     seeds = np.arange(10).astype(np.int64)
 
     # batch_limit = int(4*1e4+2)
@@ -58,24 +56,16 @@ if __name__ == '__main__':
 
     def scientific_format(string):
         if string[-3] == '-':
-            # return string[:3] + "\\times10^{" + string[-3] + string[-1] + "}"
             return string[:3] + "\\cdot10^{" + string[-3] + string[-1] + "}"
         else:
-            # return string[:3] + "\\times10^{" + string[-1] + "}"
             return string[:3] + "\\cdot10^{" + string[-1] + "}"
 
     scale = 1
     exp_keys = list(res_dicts.keys())
     for i, exp_key in enumerate(exp_keys):
-        # mu_fwd_str = f"{res_dicts[exp_key]['mu_fwd_avg'][-1]/scale:.5f}\pm{2*res_dicts[exp_key]['mu_fwd_std'][-1]/scale:.1f}"
-        # mu_bkwd_str = f"{res_dicts[exp_key]['mu_bkwd_avg'][-1]/scale:.5f}\pm{2*res_dicts[exp_key]['mu_bkwd_std'][-1]/scale:.1f}"
-        # mpc_fwd_str = f"{res_dicts[exp_key]['mpc_fwd_avg'][-1]/scale:.5f}\pm{2*res_dicts[exp_key]['mpc_fwd_std'][-1]/scale:.1f}"
-        # mpc_bkwd_str = f"{res_dicts[exp_key]['mpc_bkwd_avg'][-1]/scale:.5f}\pm{2*res_dicts[exp_key]['mpc_bkwd_std'][-1]/scale:.1f}"
-        # print(f"${exp_key.split('=')[-1]}$ & ${mu_fwd_str}$ & ${mu_bkwd_str}$ & ${mpc_fwd_str}$ & ${mpc_bkwd_str}$\\\\")
         mu_fwd_str = f"{res_dicts[exp_key]['mu_fwd_avg'][-1]/scale:.1e}"
         mu_bkwd_str = f"{res_dicts[exp_key]['mu_bkwd_avg'][-1]/scale:.1e}"
         mpc_fwd_str = f"{res_dicts[exp_key]['mpc_fwd_avg'][-1]/scale:.1e}"
         mpc_bkwd_str = f"{res_dicts[exp_key]['mpc_bkwd_avg'][-1]/scale:.1e}"
         mu_fwd_str, mu_bkwd_str, mpc_fwd_str, mpc_bkwd_str = [scientific_format(string) for string in [mu_fwd_str, mu_bkwd_str, mpc_fwd_str, mpc_bkwd_str]]
-        # print(f"${exp_key.split('=')[-1]}$ & ${mu_fwd_str}$ & ${mu_bkwd_str}$ & ${mpc_fwd_str}$ & ${mpc_bkwd_str}$\\\\")
         print(f"${exp_key.split('=')[-1]}$ & ${mu_fwd_str}$ & ${mpc_fwd_str}$ & ${mu_bkwd_str}$ & ${mpc_bkwd_str}$\\\\")
