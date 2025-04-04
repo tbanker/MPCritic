@@ -12,7 +12,7 @@ from neuromancer.modules import blocks
 sys.path.append('')
 # from algos.ddpg_continuous_action import Args, Actor
 from algos.td3_continuous_action import Args, Actor
-from modules.mpcomponents import QuadraticStageCost, QuadraticTerminalCost, PDQuadraticTerminalCost, LinearDynamics, LinearPolicy, GoalMap
+from modules.mpcomponents import QuadraticStageCost, QuadraticTerminalCost, PDQuadraticStageCost, PDQuadraticTerminalCost, LinearDynamics, LinearPolicy, GoalMap
 from modules.mpcritic import MPCritic, InputConcat
 from modules.dynamics import Dynamics
 from modules.dpcontrol import DPControl
@@ -90,12 +90,13 @@ def make_envs(args, same_state, num_steps):
 
 def load_controllers(run_names:dict, envs, global_step=None):
     goal_map = GoalMap()
+    l = PDQuadraticStageCost(np.array(envs.single_observation_space.shape).prod(), np.array(envs.single_action_space.shape).prod())
     V = PDQuadraticTerminalCost(np.array(envs.single_observation_space.shape).prod())
     mu = blocks.MLP_bounds(insize=np.array(envs.single_observation_space.shape).prod(), outsize=np.array(envs.single_action_space.shape).prod(), bias=True, linear_map=torch.nn.Linear, nonlin=torch.nn.ReLU, hsizes=[100 for h in range(2)], min=torch.from_numpy(envs.action_space.low), max=torch.from_numpy(envs.action_space.high))
     dpcontrol = DPControl(envs, H=10, mu=mu, linear_dynamics=True, V=V, rb=None, goal_map=goal_map, lr=args.learning_rate, xlim=np.array([envs.observation_space.low,envs.observation_space.high]), ulim=np.concatenate([envs.action_space.low,envs.action_space.high], axis=0)).to('cpu')
     mpcritic = MPCritic(dpcontrol).to('cpu')
     mpcritic_state_dict = torch.load(f"runs/{run_names['mpc']}/mpcritic.pt") if global_step is None else torch.load(f"runs/{run_names['mpc']}/mpcritic{global_step}.pt")
-    mpcritic.load_state_dict(mpcritic_state_dict)
+    mpcritic.load_state_dict(mpcritic_state_dict) # previous experiments used mpcritic parameter formulation
     mpcritic.l4c_update()
     mpcritic.setup_mpc()
 

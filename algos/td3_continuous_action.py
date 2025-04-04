@@ -30,7 +30,7 @@ from torch.utils.data import DataLoader
 # MPCritic stuff
 import sys
 sys.path.append('')
-from modules.mpcomponents import QuadraticStageCost, QuadraticTerminalCost, PDQuadraticTerminalCost, LinearDynamics, LinearPolicy, GoalMap
+from modules.mpcomponents import QuadraticStageCost, QuadraticTerminalCost, PDQuadraticStageCost, PDQuadraticTerminalCost, LinearDynamics, LinearPolicy, GoalMap
 from modules.mpcritic import MPCritic, InputConcat
 from modules.dynamics import Dynamics
 from modules.dpcontrol import DPControl
@@ -65,7 +65,7 @@ class Args:
     # Algorithm specific arguments
     env_id: str = "lqr-v0"
     """the id of the environment"""
-    total_timesteps: int = 50001
+    total_timesteps: int = 5101 # 50001
     """total timesteps of the experiments"""
     learning_rate: float = 1e-5
     """the learning rate of the optimizer"""
@@ -97,7 +97,7 @@ class Args:
     """intermediate saving of parameters"""
 
     # MPCritic specific arguments
-    critic_mode: str = "mpcritic"
+    critic_mode: str = "vanilla"
     """choose between `mpcritic` or `vanilla`"""
     mpc_actor: bool = True
     """use mpc actor based on mpcritic, or use a separately trained nn actor"""
@@ -269,12 +269,14 @@ poetry run pip install "stable_baselines3==2.0.0a1"
     elif args.critic_mode == "mpcritic":
         mu1 = blocks.MLP_bounds(insize=np.array(envs.single_observation_space.shape).prod(), outsize=np.array(envs.single_action_space.shape).prod(), bias=True, linear_map=torch.nn.Linear, nonlin=torch.nn.ReLU, hsizes=[100 for h in range(2)], min=torch.from_numpy(envs.action_space.low), max=torch.from_numpy(envs.action_space.high))
         mu2 = blocks.MLP_bounds(insize=np.array(envs.single_observation_space.shape).prod(), outsize=np.array(envs.single_action_space.shape).prod(), bias=True, linear_map=torch.nn.Linear, nonlin=torch.nn.ReLU, hsizes=[100 for h in range(2)], min=torch.from_numpy(envs.action_space.low), max=torch.from_numpy(envs.action_space.high))
+        l1 = PDQuadraticStageCost(n=np.array(envs.single_observation_space.shape).prod(), m=np.array(envs.single_action_space.shape).prod())
+        l2 = PDQuadraticStageCost(n=np.array(envs.single_observation_space.shape).prod(), m=np.array(envs.single_action_space.shape).prod())
         V1 = PDQuadraticTerminalCost(np.array(envs.single_observation_space.shape).prod())
         V2 = PDQuadraticTerminalCost(np.array(envs.single_observation_space.shape).prod())
-        dpcontrol1 = DPControl(envs, H=10, mu=mu1, linear_dynamics=True, V=V1, rb=rb, goal_map=goal_map, lr=args.learning_rate, xlim=np.array([envs.observation_space.low,envs.observation_space.high]), ulim=np.concatenate([envs.action_space.low,envs.action_space.high], axis=0), loss=args.loss).to(device)
-        dpcontrol2 = DPControl(envs, H=10, mu=mu1, linear_dynamics=True, V=V2, rb=rb, goal_map=goal_map, lr=args.learning_rate, xlim=np.array([envs.observation_space.low,envs.observation_space.high]), ulim=np.concatenate([envs.action_space.low,envs.action_space.high], axis=0), loss=args.loss).to(device)
-        dpcontrol1_target = DPControl(envs, H=10, mu=mu1, linear_dynamics=True, V=V1, rb=rb, goal_map=goal_map, lr=args.learning_rate, xlim=np.array([envs.observation_space.low,envs.observation_space.high]), ulim=np.concatenate([envs.action_space.low,envs.action_space.high], axis=0), loss=args.loss).to(device)
-        dpcontrol2_target = DPControl(envs, H=10, mu=mu2, linear_dynamics=True, V=V2, rb=rb, goal_map=goal_map, lr=args.learning_rate, xlim=np.array([envs.observation_space.low,envs.observation_space.high]), ulim=np.concatenate([envs.action_space.low,envs.action_space.high], axis=0), loss=args.loss).to(device)
+        dpcontrol1 = DPControl(envs, H=10, mu=mu1, linear_dynamics=True, V=V1, l=l1, rb=rb, goal_map=goal_map, lr=args.learning_rate, xlim=np.array([envs.observation_space.low,envs.observation_space.high]), ulim=np.concatenate([envs.action_space.low,envs.action_space.high], axis=0), loss=args.loss).to(device)
+        dpcontrol2 = DPControl(envs, H=10, mu=mu1, linear_dynamics=True, V=V2, l=l2, rb=rb, goal_map=goal_map, lr=args.learning_rate, xlim=np.array([envs.observation_space.low,envs.observation_space.high]), ulim=np.concatenate([envs.action_space.low,envs.action_space.high], axis=0), loss=args.loss).to(device)
+        dpcontrol1_target = DPControl(envs, H=10, mu=mu1, linear_dynamics=True, l=l1, V=V1, rb=rb, goal_map=goal_map, lr=args.learning_rate, xlim=np.array([envs.observation_space.low,envs.observation_space.high]), ulim=np.concatenate([envs.action_space.low,envs.action_space.high], axis=0), loss=args.loss).to(device)
+        dpcontrol2_target = DPControl(envs, H=10, mu=mu2, linear_dynamics=True, l=l2, V=V2, rb=rb, goal_map=goal_map, lr=args.learning_rate, xlim=np.array([envs.observation_space.low,envs.observation_space.high]), ulim=np.concatenate([envs.action_space.low,envs.action_space.high], axis=0), loss=args.loss).to(device)
         dpcontrol1_target.load_state_dict(dpcontrol1.state_dict())
         dpcontrol2_target.load_state_dict(dpcontrol2.state_dict())
         
