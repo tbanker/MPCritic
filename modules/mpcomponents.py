@@ -153,8 +153,8 @@ class PDQuadraticStageCost(nn.Module):
         """ x^TQx + u^TRu """
         # L4CasADi models can only have 1 input, not (x,u)
         x, u = input[..., :self.n], input[..., self.n:]
-        # return (x @ self.Q * x).sum(axis=1, keepdims=True) + (u @ self.R * u).sum(axis=1, keepdims=True)
-        return (x @ self.Q * x).sum(axis=1, keepdims=True)
+        return (x @ self.Q * x).sum(axis=1, keepdims=True) + (u @ self.R * u).sum(axis=1, keepdims=True)
+        # return (x @ self.Q * x).sum(axis=1, keepdims=True)
 
 class PDQuadraticTerminalCost(nn.Module):
     def __init__(self, n, L=None, epsilon=0.001):

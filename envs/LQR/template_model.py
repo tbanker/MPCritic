@@ -34,12 +34,12 @@ def template_model(n, m, symvar_type='MX'):
 
     # Set expression. These can be used in the cost function, as non-linear constraints
     # or just to monitor another output.
-    model.set_expression(expr_name='stage_cost', expr=sum1(_x**2)+1000*sum1(_u**2))
+    model.set_expression(expr_name='stage_cost', expr=sum1(_x**2)+10*sum1(_u**2))
     model.set_expression(expr_name='terminal_cost', expr=bilin(P, _x))
     model.set_expression(expr_name='tracking_cost', expr=sum1(_x**2))
 
     # Differential equations (includes rescaling)
-    model.set_rhs('x', A@_x-B@_u)
+    model.set_rhs('x', A@_x+B@_u)
 
     # Build the model
     model.setup()
