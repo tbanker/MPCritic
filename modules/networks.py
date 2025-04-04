@@ -9,11 +9,11 @@ from torch.distributions.normal import Normal
 class Actor(nn.Module):
     def __init__(self, env):
         super().__init__()
-        self.fc1 = nn.Linear(np.array(env.single_observation_space.shape).prod(), 64)
-        self.fc2 = nn.Linear(64, 64)
-        # self.fc3 = nn.Linear(64, 64)
-        self.fc_mean = nn.Linear(64, np.prod(env.single_action_space.shape))
-        self.fc_logstd = nn.Linear(64, np.prod(env.single_action_space.shape))
+        self.fc1 = nn.Linear(np.array(env.single_observation_space.shape).prod(), 256)
+        self.fc2 = nn.Linear(256, 256)
+        # self.fc3 = nn.Linear(256, 256)
+        self.fc_mean = nn.Linear(256, np.prod(env.single_action_space.shape))
+        self.fc_logstd = nn.Linear(256, np.prod(env.single_action_space.shape))
         # action rescaling
         self.register_buffer(
             "action_scale",
@@ -58,15 +58,21 @@ class Actor(nn.Module):
         mean = torch.tanh(mean) * self.action_scale + self.action_bias
         return action, log_prob, mean
     
+    def get_deterministic_action(self, x):
+        mean, _ = self(x)
+        mean = torch.tanh(mean) * self.action_scale + self.action_bias
+        return mean
+        
+    
 
 class Mu(nn.Module):
-    def __init__(self, actor):
+    def __init__(self, Actor):
         super().__init__()
-        self.actor = actor
+        self.actor = Actor
+
 
     def forward(self, x):
-        a, _ = self.actor(x)
-        return a
+        mean = self.actor.get_deterministic_action(x)
 
-
+        return mean
 

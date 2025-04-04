@@ -22,7 +22,7 @@ from torch.utils.data import DataLoader
 # MPCritic stuff
 import sys
 sys.path.append('')
-from modules.mpcomponents import QuadraticStageCost, PDQuadraticStageCost, QuadraticTerminalCost, PDQuadraticTerminalCost, LinearDynamics, LinearPolicy, GoalMap
+from modules.mpcomponents import GoalConditionedStageCost, QuadraticStageCost, PDQuadraticStageCost, QuadraticTerminalCost, PDQuadraticTerminalCost, LinearDynamics, LinearPolicy, GoalMap
 from modules.dynamics import Dynamics
 
 
@@ -42,7 +42,7 @@ class InputConcat(torch.nn.Module):
         return self.module(z)
 
 class DPControl(nn.Module):
-    def __init__(self, env, H=5, rb=None, dynamics=None, l=None, V=None, mu=None, goal_map=None, linear_dynamics=False, xlim=None, ulim=None, loss=None, scale=10.0, opt="AdamW", lr=0.001):
+    def __init__(self, env, H=5, rb=None, dynamics=None, l=None, V=None, mu=None, goal_map=None, terminal_Q = False, linear_dynamics=False, xlim=None, ulim=None, loss=None, scale=10.0, opt="AdamW", lr=0.001):
         super().__init__()
 
         self.env = env
@@ -61,18 +61,34 @@ class DPControl(nn.Module):
         if goal_map is not None:
             self.goal_map = goal_map if goal_map != None else GoalMap()
         self.ny = self.goal_map.ny if self.goal_map.ny != None else self.nx
-        self.mu = mu if mu != None else blocks.MLP(self.nx, self.nu, bias=True,
+        if mu is not None:
+            self.mu = mu
+        elif ulim is not None:
+            self.mu = blocks.MLP_bounds(self.nx, self.nu, bias=True,
+                                                      linear_map=torch.nn.Linear, nonlin=torch.nn.ReLU,
+                                                      hsizes=[64 for h in range(2)],
+                                                      min=torch.tensor(ulim[0]),
+                                                      max=torch.tensor(ulim[1]))
+        else:
+            self.mu = blocks.MLP(self.nx, self.nu, bias=True,
                                                       linear_map=torch.nn.Linear, nonlin=torch.nn.ReLU,
                                                       hsizes=[64 for h in range(2)])
         self.dynamics = dynamics if dynamics != None else Dynamics(env, rb=self.rb, linear_dynamics=linear_dynamics)
-        self.l = InputConcat(l) if l != None else InputConcat(PDQuadraticStageCost(self.ny, self.nu))
+        # self.l = InputConcat(l) if l != None else InputConcat(PDQuadraticStageCost(self.ny, self.nu))
+        self.l = InputConcat(l) if l != None else InputConcat(GoalConditionedStageCost(self.ny, self.nu))
         # self.l = InputConcat(l) if l != None else InputConcat(blocks.MLP(self.ny + self.nu, 1, bias=True,
         #                                                   linear_map=torch.nn.Linear, nonlin=torch.nn.ReLU,
         #                                                   hsizes=[64 for h in range(2)]))
-        # self.V = V if V != None else PDQuadraticTerminalCost(self.ny)                                        
-        self.V = V if V != None else blocks.MLP(self.ny, 1, bias=True,
-                                                          linear_map=torch.nn.Linear, nonlin=torch.nn.ReLU,
-                                                          hsizes=[64 for h in range(2)])
+        # self.V = V if V != None else PDQuadraticTerminalCost(self.ny)
+        # 
+        if terminal_Q:
+            self.V = V if V != None else blocks.MLP(self.nx + self.nu, 1, bias=True,
+                                                            linear_map=torch.nn.Linear, nonlin=torch.nn.ReLU,
+                                                            hsizes=[256 for h in range(2)])
+        else:                                    
+            self.V = V if V != None else blocks.MLP(self.ny, 1, bias=True,
+                                                            linear_map=torch.nn.Linear, nonlin=torch.nn.ReLU,
+                                                            hsizes=[64 for h in range(2)])
         # self.x_bias = GoalBias(self.nx)
         # self.u_bias = GoalBias(self.nu)
 
@@ -86,7 +102,10 @@ class DPControl(nn.Module):
         self.mu_node = Node(self.mu, ['x'], ['u'], name='mu')
         self.dx_node = Node(self.dynamics.dx, ['x','u'],['x'])
         self.l_node = Node(self.l, ['z','u'],['l'])
-        self.V_node = Node(self.V, ['z'],['V'])
+        if terminal_Q:
+            self.V_node = Node(self.V, ['x', 'u'],['V'])
+        else:
+            self.V_node = Node(self.V, ['z'],['V'])
         self.model = System([self.goal_node, self.mu_node, self.dx_node, self.l_node, self.V_node], nsteps=self.H + 2)
         self.model_kwargs = {'dtype' : list(self.model.parameters())[0].dtype,
                              'device' : list(self.model.parameters())[0].device,}
@@ -110,9 +129,9 @@ class DPControl(nn.Module):
     def forward(self,x): 
         return self.mu(x)
     
-    def train(self, trainer_kwargs=None, n_samples=10000, batch_size=256):
+    def train(self, trainer_kwargs=None, n_samples=10000, batch_size=256, epochs=1, epoch_verbose=5, patience=1):
         train_loader = self._train_loader(n_samples, batch_size)
-        trainer_kwargs = trainer_kwargs if trainer_kwargs != None else {'epochs':1, 'epoch_verbose':5, 'patience':1}
+        trainer_kwargs = trainer_kwargs if trainer_kwargs != None else {'epochs':epochs, 'epoch_verbose':epoch_verbose, 'patience':patience}
         trainer = Trainer(self.problem, train_loader,
                           optimizer=self.opt,
                           train_metric='train_loss',
@@ -139,8 +158,11 @@ class DPControl(nn.Module):
         constraints = []
 
         if self.xlim is not None:
-            state_lower_bound_penalty = self.scale * (x > self.xlim[0])
-            state_upper_bound_penalty = self.scale * (x < self.xlim[1])
+            xrange = self.xlim[1] - self.xlim[0]
+            state_lower_bound_penalty = self.scale * ((x / torch.from_numpy(xrange)) > (self.xlim[0] / xrange))
+            state_upper_bound_penalty = self.scale * ((x / torch.from_numpy(xrange)) < (self.xlim[1] / xrange))
+            # state_lower_bound_penalty = (self.scale/xrange) * (x > self.xlim[0])
+            # state_upper_bound_penalty = (self.scale/xrange) * (x < self.xlim[1])
             state_lower_bound_penalty.name = 'x_min'
             state_upper_bound_penalty.name = 'x_max'
 
@@ -148,8 +170,11 @@ class DPControl(nn.Module):
             constraints.append(state_upper_bound_penalty)
 
         if self.ulim is not None:
-            action_lower_bound_penalty = self.scale * (u > self.ulim[0])
-            action_upper_bound_penalty = self.scale * (u < self.ulim[1])
+            # urange = self.ulim[1] - self.ulim[0]
+            # print(urange)
+            # print(self.ulim[0])
+            action_lower_bound_penalty = (self.scale) * (u > self.ulim[0])
+            action_upper_bound_penalty = (self.scale) * (u < self.ulim[1])
             action_lower_bound_penalty.name = 'u_min'
             action_upper_bound_penalty.name = 'u_max'
 

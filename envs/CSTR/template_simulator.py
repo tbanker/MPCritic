@@ -60,9 +60,11 @@ def template_simulator(model, uncertain_params = "nominal", goal=0.60):
         alpha_var, beta_var = [np.array([1.0, 1.05, 0.95]), np.array([1.0, 1.1, 0.9])]
     elif uncertain_params == "nominal":
         alpha_var, beta_var = [np.array([1.0]), np.array([1.0])]
+    alpha = np.random.choice(alpha_var)
+    beta = np.random.choice(beta_var)
     def p_fun(t_now):
-        alpha = np.random.choice(alpha_var)
-        beta = np.random.choice(beta_var)
+        # alpha = np.random.choice(alpha_var)
+        # beta = np.random.choice(beta_var)
         p_num['alpha'], p_num['beta'] = alpha, beta   
         return p_num 
 

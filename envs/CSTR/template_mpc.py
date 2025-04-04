@@ -31,10 +31,8 @@ rel_do_mpc_path = os.path.join('..','..')
 sys.path.append(rel_do_mpc_path)
 import do_mpc
 
-import l4casadi as l4c
-
-def template_mpc(model, goal = 0.6, mpc_mode = "nstep_vfmpc", n_horizon = 20, silence_solver = True, solver="pardiso",
-                RL_env=False, uncertain_params = "nominal"):
+def template_mpc(model, goal = 0.6, mpc_mode = "baseline", n_horizon = 20, silence_solver = True, solver="pardiso",
+                RL_env=False, uncertain_params = "include_truth"):
     """
     --------------------------------------------------------------------------
     template_mpc: tuning parameters

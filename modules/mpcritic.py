@@ -30,12 +30,12 @@ class InputConcat(torch.nn.Module):
         return self.module(z)
 
 class MPCritic(nn.Module):
-    def __init__(self, dpcontrol, unc_p=None, mpc_settings=None):
+    def __init__(self, dpcontrol, unc_p=None, mpc_settings=None, terminal_Q=False):
         super().__init__()
 
         self.dpcontrol = dpcontrol
 
-        self.critic_parameters = nn.ParameterDict({'f': self.dpcontrol.dynamics.dx.module, 'mu': self.dpcontrol.mu, 'l': self.dpcontrol.l.module, 'V': self.dpcontrol.V})
+        self.critic_parameters = nn.ParameterDict({'l': self.dpcontrol.l.module, 'V': self.dpcontrol.V})
         self.dynamics_parameters = nn.ParameterDict({'f': self.dpcontrol.dynamics.dx.module})
         self.mu_parameters = nn.ParameterDict({'mu': self.dpcontrol.mu})
         self.all_parameters = nn.ParameterDict({'l': self.dpcontrol.l.module, 'V': self.dpcontrol.V,
@@ -133,27 +133,27 @@ class MPCritic(nn.Module):
         """ single-batched MPC operation """
         return self.mpc.make_step(x0)
     
-    def _update_dynamics(self):
+    def _update_dynamics(self, kwargs={}):
         # self.freeze(self.all_parameters)
         # self.unfreeze(self.dynamics_parameters)
-        self.dpcontrol.dynamics.train()
+        self.dpcontrol.dynamics.train(**kwargs)
         # self.freeze(self.dynamics_parameters)
         # self.unfreeze(self.critic_parameters) # default state should be critic parameters unfrozen
         return
     
-    def _update_controller(self):
+    def _update_controller(self, kwargs={}):
         # self.freeze(self.all_parameters)
         # self.unfreeze(self.mu_parameters)
-        self.dpcontrol.train()
+        self.dpcontrol.train(**kwargs)
         # self.freeze(self.mu_parameters)
         # self.unfreeze(self.critic_parameters) # default state should be critic parameters unfrozen
         return
 
-    def train_f_mu(self, train_f=True, train_mu=True):
+    def train_f_mu(self, train_f=True, train_mu=True, f_kwargs={}, mu_kwargs={}):
         if train_f:
-            self._update_dynamics()
+            self._update_dynamics(kwargs=f_kwargs)
         if train_mu:
-            self._update_controller()
+            self._update_controller(kwargs=mu_kwargs)
         return
 
     def l4c_update(self):
