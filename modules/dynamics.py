@@ -39,7 +39,7 @@ class InputConcat(torch.nn.Module):
         return self.module(z)
 
 class Dynamics(nn.Module):
-    def __init__(self, env, rb=None, dx=None, goal_map=lambda x:x, linear_dynamics=False, opt="AdamW", lr=0.001):
+    def __init__(self, env, rb=None, dx=None, linear_dynamics=False, opt="AdamW", lr=0.001):
         super().__init__()
 
         self.env = env
@@ -72,7 +72,7 @@ class Dynamics(nn.Module):
         # Formulate problem
         self.xpred = variable('xnext')
         self.xtrue = variable('xtrue')
-        self.loss = (self.xpred == self.xtrue)^2 # confusingly, this refers to a constraint, not a Boolean
+        self.loss = (self.xpred == self.xtrue)^2
         self.obj = PenaltyLoss([self.loss], [])
         self.problem = Problem([self.model], self.obj)
 
@@ -92,7 +92,7 @@ class Dynamics(nn.Module):
                           optimizer=self.opt,
                           train_metric='train_loss',
                           eval_metric='train_loss',
-                          **trainer_kwargs) # can add a test loss, but the dataset is constantly being updated anyway
+                          **trainer_kwargs)
         trainer.current_epoch = 2
         self.best_model = trainer.train() # output is a deepcopy
         return
@@ -108,25 +108,6 @@ class Dynamics(nn.Module):
 
         train_loader = DataLoader(datadict, batch_size=batch_size, shuffle=True, collate_fn=datadict.collate_fn)
         return train_loader
-    
-    def rollout_eval(self):
-
-        ## Add current run logger for wanbd
-
-        obs, info = self.env.reset()
-        signal = signals.prbs(10, self.nu, min=self.env.action_space.low, max=self.env.action_space.high, p=.9, rng=np.random.default_rng())/2
-        trajectory = self.model_eval({'x': torch.Tensor(obs).unsqueeze(1).to(**self.model_kwargs),
-                                      'u':torch.Tensor(signal[None,:]).to(**self.model_kwargs)})   
-        
-        mae = 0.0
-        for u,x in zip(signal,trajectory['x'].squeeze().detach().numpy()):
-            error = obs.squeeze() - x
-            mae += np.abs(np.mean(error))
-            obs, rewards, terminations, truncations, infos = envs.step([u])
-            # print(s)
-
-        print(mae/len(signal))
-        return
 
 if __name__ == "__main__":
     import os
@@ -250,10 +231,6 @@ if __name__ == "__main__":
     pred_dx = dynamics.dx(torch.from_numpy(obs).to(**kwargs), torch.from_numpy(action).to(**kwargs))
     pred_dyn = dynamics(torch.from_numpy(obs).to(**kwargs), torch.from_numpy(action).to(**kwargs))
     print(f"s'_dx == s'_dyn: {torch.allclose(pred_dx, pred_dyn)}")
-
-    """ Rollout eval """
-    if n_envs == 1:
-        dynamics.rollout_eval()
 
     """ Training """
     p_true = np.concatenate([A_env, B_env], axis=1)

@@ -31,7 +31,7 @@ from torch.utils.data import DataLoader
 # MPCritic stuff
 import sys
 sys.path.append('')
-from modules.mpcomponents import QuadraticStageCost, QuadraticTerminalCost, PDQuadraticTerminalCost, LinearDynamics, LinearPolicy, GoalMap, GoalBias
+from modules.mpcomponents import QuadraticStageCost, QuadraticTerminalCost, PDQuadraticTerminalCost, LinearDynamics, LinearPolicy, GoalMap
 from modules.mpcritic import MPCritic, InputConcat
 from modules.dynamics import Dynamics
 from modules.dpcontrol import DPControl
@@ -88,8 +88,14 @@ class Args:
     """automatic tuning of the entropy coefficient"""
 
     # MPCritic specific arguments
-    critic_mode = "mpcritic"
+    critic_mode: str = "vanilla"
     """choose between `mpcritic` or `vanilla`"""
+    scale: float = 10.0
+    """weight coefficient for penalty term in neuromancer"""
+    loss: str = None
+    """method for dealing with constraints ("penalty" or None)"""
+    H:int = 5
+    """prediction horizon in dpcontrol"""
 
 def make_env(env_id, seed, idx, capture_video, run_name, path, goal_map=None):
     if "cstr" in env_id:
@@ -151,7 +157,12 @@ class SoftQNetwork(nn.Module):
         x = self.fc3(x)
         return x
 
-
+class QMPC(nn.Module):
+    def __init__(self, Q):
+        super().__init__()
+        self.Q = Q
+    def forward(self, x, a):
+        return -self.Q(x,a)
 
 
 
@@ -197,7 +208,7 @@ poetry run pip install "stable_baselines3==2.0.0a1"
     if "cstr" in args.env_id:
         # goal_map = GoalMap(idx=[1], goal=0.6)
         goal_map_env = GoalMap(idx=[1], goal=0.6) # define the reward
-        goal_map = GoalMap(idx=[1], goal=0.6, learn_goal=True) # define the stage cost
+        goal_map = GoalMap(idx=[1], goal=0.6, learn_goal=False) # define the stage cost
     else:
         goal_map = None
     exp_path = f"runs/{run_name}/"
@@ -231,37 +242,69 @@ poetry run pip install "stable_baselines3==2.0.0a1"
         q_optimizer = optim.AdamW(list(qf1.parameters()) + list(qf2.parameters()), lr=args.q_lr)
     elif args.critic_mode == "mpcritic":
 
-        # mu = Mu(actor)
-        mu = None
+        mu = Mu(actor)
+        # mu = None
         ulim = np.array([envs.action_space.low,envs.action_space.high])
         # ulim = None
-        # xlim = np.array([envs.observation_space.low,envs.observation_space.high])
-        xlim = None
-        dpcontrol1 = DPControl(envs, rb=rb, lr=args.policy_lr, mu=mu, linear_dynamics=False, ulim=ulim, xlim=xlim, goal_map=goal_map).to(device)
-        dpcontrol2 = DPControl(envs, rb=rb, lr=args.policy_lr, mu=mu, linear_dynamics=False, ulim=ulim, xlim=xlim, goal_map=goal_map).to(device)
-        dpcontrol1_target = DPControl(envs, rb=rb, lr=args.policy_lr, mu=mu, linear_dynamics=False, ulim=ulim, xlim=xlim, goal_map=goal_map).to(device)
-        dpcontrol2_target = DPControl(envs, rb=rb, lr=args.policy_lr, mu=mu, linear_dynamics=False, ulim=ulim, xlim=xlim, goal_map=goal_map).to(device)
-        dpcontrol1_target.load_state_dict(dpcontrol1.state_dict())
-        dpcontrol2_target.load_state_dict(dpcontrol2.state_dict())
+        xlim = np.array([envs.observation_space.low,envs.observation_space.high])
+        # xlim = None
+        # scale = 10.0
+        # loss = "penalty"
+        # dpcontrol1 = DPControl(envs, terminal_Q=True, rb=rb, lr=args.policy_lr, mu=mu, linear_dynamics=False, ulim=ulim, xlim=xlim, goal_map=goal_map, scale=args.scale, loss=args.loss, H=args.H).to(device)
+        # dpcontrol2 = DPControl(envs, terminal_Q=True, rb=rb, lr=args.policy_lr, mu=mu, linear_dynamics=False, ulim=ulim, xlim=xlim, goal_map=goal_map, scale=args.scale, loss=args.loss, H=args.H).to(device)
+        # dpcontrol1_target = DPControl(envs, terminal_Q=True, rb=rb, lr=args.policy_lr, mu=mu, linear_dynamics=False, ulim=ulim, xlim=xlim, goal_map=goal_map, scale=args.scale, loss=args.loss, H=args.H).to(device)
+        # dpcontrol2_target = DPControl(envs, terminal_Q=True, rb=rb, lr=args.policy_lr, mu=mu, linear_dynamics=False, ulim=ulim, xlim=xlim, goal_map=goal_map, scale=args.scale, loss=args.loss, H=args.H).to(device)
+        # dpcontrol1_target.load_state_dict(dpcontrol1.state_dict())
+        # dpcontrol2_target.load_state_dict(dpcontrol2.state_dict())
 
-        qf1 = MPCritic(dpcontrol1).to(device)
-        # qf1.setup_mpc()
-        qf1.requires_grad_(True) # just do it
-        qf1_target = MPCritic(dpcontrol1_target).to(device)
+        # qf1 = dpcontrol1.V.to(device)
+        # qf2 = dpcontrol2.V.to(device)
+        # qf1_target = dpcontrol1_target.V.to(device)
+        # qf2_target = dpcontrol2_target.V.to(device)
+        # qf1_target.load_state_dict(qf1.state_dict())
+        # qf2_target.load_state_dict(qf2.state_dict())
 
-        qf2 = MPCritic(dpcontrol2).to(device)
-        # qf2.setup_mpc()
-        qf2.requires_grad_(True) # just do it
-        qf2_target = MPCritic(dpcontrol2_target).to(device)
+        # q_optimizer = optim.AdamW(list(qf1.parameters()) + list(qf2.parameters()), lr=args.q_lr)
 
-        qf1_params = list()
-        for p in qf1.critic_parameters.values():
-            qf1_params += list(p.parameters())
-        qf2_params = list()
-        for p in qf2.critic_parameters.values():
-            qf2_params += list(p.parameters())
+        # mpcritic1 = MPCritic(dpcontrol1).to(device)
+        # mpcritic1.requires_grad_(True) # just do it
 
-        q_optimizer = optim.AdamW(qf1_params + qf2_params, lr=args.q_lr) 
+
+        # second attempt
+        qf1 = SoftQNetwork(envs).to(device)
+        qf2 = SoftQNetwork(envs).to(device)
+        qf1_target = SoftQNetwork(envs).to(device)
+        qf2_target = SoftQNetwork(envs).to(device)
+        qf1_target.load_state_dict(qf1.state_dict())
+        qf2_target.load_state_dict(qf2.state_dict())
+        q_optimizer = optim.AdamW(list(qf1.parameters()) + list(qf2.parameters()), lr=args.q_lr)
+
+        dpcontrol1 = DPControl(envs, V=QMPC(qf1), terminal_Q=True, rb=rb, lr=args.policy_lr, mu=mu, linear_dynamics=False, ulim=ulim, xlim=xlim, goal_map=goal_map, scale=args.scale, loss=args.loss, H=args.H).to(device)
+        mpcritic1 = MPCritic(dpcontrol1).to(device)
+        mpcritic1.requires_grad_(True) # just do it
+
+        # mpcritic2 = MPCritic(dpcontrol2).to(device)
+        # mpcritic2.requires_grad_(True) # just do it
+
+
+        # qf1 = MPCritic(dpcontrol1).to(device)
+        # # qf1.setup_mpc()
+        # qf1.requires_grad_(True) # just do it
+        # qf1_target = MPCritic(dpcontrol1_target).to(device)
+
+        # qf2 = MPCritic(dpcontrol2).to(device)
+        # # qf2.setup_mpc()
+        # qf2.requires_grad_(True) # just do it
+        # qf2_target = MPCritic(dpcontrol2_target).to(device)
+
+        # qf1_params = list()
+        # for p in qf1.critic_parameters.values():
+        #     qf1_params += list(p.parameters())
+        # qf2_params = list()
+        # for p in qf2.critic_parameters.values():
+        #     qf2_params += list(p.parameters())
+
+        # q_optimizer = optim.AdamW(qf1_params + qf2_params, lr=args.q_lr) 
 
     # Automatic entropy tuning
     if args.autotune:
@@ -328,13 +371,6 @@ poetry run pip install "stable_baselines3==2.0.0a1"
             qf_loss.backward()
             q_optimizer.step()
 
-            if args.critic_mode == "mpcritic" and global_step % 100 == 0:
-                if global_step < 2*args.learning_starts:
-                    qf1.train_f_mu(train_f=True, train_mu=False, f_kwargs={'epochs':100, 'epoch_verbose':5, 'patience':5})
-                    qf2.train_f_mu(train_f=True, train_mu=False, f_kwargs={'epochs':100, 'epoch_verbose':5, 'patience':5})
-                else:
-                    qf1.train_f_mu(train_f=False, train_mu=True)
-                    qf2.train_f_mu(train_f=False, train_mu=True)
 
             if global_step % args.policy_frequency == 0:  # TD 3 Delayed update support
                 for _ in range(
@@ -360,6 +396,16 @@ poetry run pip install "stable_baselines3==2.0.0a1"
                         a_optimizer.step()
                         alpha = log_alpha.exp().item()
 
+
+            if args.critic_mode == "mpcritic" and global_step % 50 == 0:
+                if global_step < 2*args.learning_starts:
+                    mpcritic1.train_f_mu(train_f=True, train_mu=False, f_kwargs={'epochs':50, 'epoch_verbose':5, 'patience':5})
+                    # mpcritic2.train_f_mu(train_f=True, train_mu=False, f_kwargs={'epochs':100, 'epoch_verbose':5, 'patience':5})
+                # else:
+                mpcritic1.train_f_mu(train_f=True, train_mu=True, mu_kwargs={'epochs':1, 'epoch_verbose':5, 'patience':5})
+                # mpcritic2.train_f_mu(train_f=True, train_mu=True) # I think unless mu can joinly minimize mpcritic1 + mpcritic2, doing this individually is detrimental
+
+
             # update the target networks
             if global_step % args.target_network_frequency == 0:
                 for param, target_param in zip(qf1.parameters(), qf1_target.parameters()):
@@ -383,6 +429,14 @@ poetry run pip install "stable_baselines3==2.0.0a1"
                 )
                 if args.autotune:
                     writer.add_scalar("losses/alpha_loss", alpha_loss.item(), global_step)
+
+
+    if args.track:
+        torch.save(qf1.state_dict(), exp_path+"/vf.pth")
+        torch.save(actor.state_dict(), exp_path+"/actor.pth")
+
+        wandb.finish()
+        print("close")
 
     envs.close()
     writer.close()

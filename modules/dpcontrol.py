@@ -42,7 +42,7 @@ class InputConcat(torch.nn.Module):
         return self.module(z)
 
 class DPControl(nn.Module):
-    def __init__(self, env, H=5, rb=None, dynamics=None, l=None, V=None, mu=None, goal_map=None, terminal_Q = False, linear_dynamics=False, xlim=None, ulim=None, loss=None, scale=10.0, opt="AdamW", lr=0.001):
+    def __init__(self, env, H=5, rb=None, dynamics=None, l=None, V=None, mu=None, goal_map=None, terminal_Q = False, linear_dynamics=False, xlim=None, ulim=None, loss='penalty', scale=10.0, opt="AdamW", lr=0.001):
         super().__init__()
 
         self.env = env
@@ -74,13 +74,7 @@ class DPControl(nn.Module):
                                                       linear_map=torch.nn.Linear, nonlin=torch.nn.ReLU,
                                                       hsizes=[64 for h in range(2)])
         self.dynamics = dynamics if dynamics != None else Dynamics(env, rb=self.rb, linear_dynamics=linear_dynamics)
-        # self.l = InputConcat(l) if l != None else InputConcat(PDQuadraticStageCost(self.ny, self.nu))
-        self.l = InputConcat(l) if l != None else InputConcat(GoalConditionedStageCost(self.ny, self.nu))
-        # self.l = InputConcat(l) if l != None else InputConcat(blocks.MLP(self.ny + self.nu, 1, bias=True,
-        #                                                   linear_map=torch.nn.Linear, nonlin=torch.nn.ReLU,
-        #                                                   hsizes=[64 for h in range(2)]))
-        # self.V = V if V != None else PDQuadraticTerminalCost(self.ny)
-        # 
+        self.l = InputConcat(l) if l != None else InputConcat(PDQuadraticStageCost(self.ny, self.nu))
         if terminal_Q:
             self.V = V if V != None else blocks.MLP(self.nx + self.nu, 1, bias=True,
                                                             linear_map=torch.nn.Linear, nonlin=torch.nn.ReLU,
@@ -89,15 +83,10 @@ class DPControl(nn.Module):
             self.V = V if V != None else blocks.MLP(self.ny, 1, bias=True,
                                                             linear_map=torch.nn.Linear, nonlin=torch.nn.ReLU,
                                                             hsizes=[64 for h in range(2)])
-        # self.x_bias = GoalBias(self.nx)
-        # self.u_bias = GoalBias(self.nu)
-
 
         self.xlim = xlim # np.array(2,n) 0-lower, 1-upper
         self.ulim = ulim # np.array(2,m) 0-lower, 1-upper
 
-        # self.x_bias_node = Node(self.x_bias, ['x'], ['x_bias'])
-        # self.u_bias_node = Node(self.u_bias, ['u'], ['u_bias'])
         self.goal_node = Node(self.goal_map, ['x'], ['z'])
         self.mu_node = Node(self.mu, ['x'], ['u'], name='mu')
         self.dx_node = Node(self.dynamics.dx, ['x','u'],['x'])
@@ -136,14 +125,13 @@ class DPControl(nn.Module):
                           optimizer=self.opt,
                           train_metric='train_loss',
                           eval_metric='train_loss',
-                          **trainer_kwargs) # can add a test loss, but the dataset is constantly being updated anyway
+                          **trainer_kwargs)
         trainer.current_epoch = 2
         self.best_model = trainer.train() # output is a deepcopy
         return
     
     def _train_loader(self, n_samples, batch_size):
 
-        # need to coordinate the number of epoch and batch size
         batch = self.rb.sample(n_samples)
         data = {}
         data['x'] = batch.observations.unsqueeze(1).to(**self.model_kwargs)
@@ -161,8 +149,6 @@ class DPControl(nn.Module):
             xrange = self.xlim[1] - self.xlim[0]
             state_lower_bound_penalty = self.scale * ((x / torch.from_numpy(xrange)) > (self.xlim[0] / xrange))
             state_upper_bound_penalty = self.scale * ((x / torch.from_numpy(xrange)) < (self.xlim[1] / xrange))
-            # state_lower_bound_penalty = (self.scale/xrange) * (x > self.xlim[0])
-            # state_upper_bound_penalty = (self.scale/xrange) * (x < self.xlim[1])
             state_lower_bound_penalty.name = 'x_min'
             state_upper_bound_penalty.name = 'x_max'
 
@@ -184,19 +170,9 @@ class DPControl(nn.Module):
         return constraints
     
     def _problem(self):
+        # choose between 'penalty' and unconstrained; augmented-lagrangian not working in Neuromancer
         if self.loss == 'penalty':
             self.obj = PenaltyLoss([self.l_loss, self.V_loss], self.constraints)
-        elif self.loss == 'lagrange':
-            """
-            I don't think this was ever fully implemented by Neuromancer
-                1) The lagrange multiplier logic only works if the batch_size is the size of the train_loader (n_samples)
-                2) The logic for applying the lagrange multipliers in loss.py uses input_dict['input'],
-                    but the key ['input'] is never added to input_dict nor referenced in source outside of loss.py
-            """
-            raise NotImplementedError
-            assert n_samples == batch_size
-            train_loader = self._train_loader(n_samples, batch_size)
-            self.obj = AugmentedLagrangeLoss([self.l_loss, self.V_loss], self.constraints, train_data=train_loader)
         else: # unconstrained
             self.obj = PenaltyLoss([self.l_loss, self.V_loss], [])
 

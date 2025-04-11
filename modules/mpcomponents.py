@@ -3,31 +3,7 @@ import torch.nn as nn
 import numpy as np
 
 kwargs = {'dtype' : torch.float32,
-          'device' : 'cpu'}
-
-class TestModel(nn.Module):
-    def __init__(self, p):
-        super().__init__()
-        self.p = nn.Parameter(torch.from_numpy(p))
-
-    def forward(self, x):
-        return self.p*x
-    
-class GoalBias(nn.Module):
-    def __init__(self, n, b=None, lower=None, upper=None, requires_grad=True):
-        super().__init__()
-        b = torch.rand((1,n), **kwargs) if b is None else torch.from_numpy(b)
-        self.b = nn.Parameter(b, requires_grad=requires_grad)
-        self.lower, self.upper = lower, upper
-        self.ny = n
-    
-    def forward(self,input):
-        """x-b"""
-        if self.upper is None and self.lower is None:
-            return input - self.b
-        else:
-            return input - self.clamp(self.b, min=self.lower, max=self.upper)
-        
+          'device' : 'cpu'}        
 
 class GoalMap(nn.Module):
     def __init__(self, idx:list=None, goal=0.0, learn_goal=False):
@@ -47,7 +23,6 @@ class GoalMap(nn.Module):
         if self.idx is None:
             return input
         else:
-            # print(input[...,self.idx] - self.goal)
             return input[...,self.idx] - self.goal
     
     def forward_env(self, x):
@@ -61,7 +36,7 @@ class GoalConditionedStageCost(nn.Module):
         self.std = std
 
     def forward(self, input):
-        """ x^TQx + u^TRu """
+        """ -e^(-0.5*input^2) """
         # L4CasADi models can only have 1 input, not (x,u)
         x, u = input[..., :self.n], input[..., self.n:]
         return -torch.exp(-0.5*(x**2).sum(axis=1, keepdims=True) / self.std**2)
@@ -75,7 +50,6 @@ class QuadraticStageCost(nn.Module):
         self.m = m
         self.Q = nn.Parameter(Q)
         self.R = nn.Parameter(R)
-        # Q, R share memory with original numpy arrays
 
     def forward(self, input):
         """ x^TQx + u^TRu """
@@ -89,7 +63,6 @@ class QuadraticTerminalCost(nn.Module):
         P = torch.rand((n,n), **kwargs) if P is None else torch.from_numpy(P)
         self.n = n
         self.P = nn.Parameter(P)
-        # P shares memory with original numpy array
 
     def forward(self, input):
         """ x^TPx """
@@ -105,7 +78,6 @@ class LinearDynamics(nn.Module):
         self.m = m
         self.A = nn.Parameter(A)
         self.B = nn.Parameter(B)
-        # A, B share memory with original numpy arrays
 
     def forward(self, input):
         """ Ax + Bu """
@@ -120,7 +92,6 @@ class LinearPolicy(nn.Module):
         self.n = n
         self.m = m
         self.K = nn.Parameter(K)
-        # K shares memory with original numpy array
 
     def forward(self, input):
         """ Kx """
@@ -137,16 +108,13 @@ class PDQuadraticStageCost(nn.Module):
         self.N = nn.Parameter(N)
         self.M = nn.Parameter(M)
         self.epsilon = epsilon
-        # N, M share memory with original numpy arrays
 
     @property
     def Q(self):
-        """ Automatically recalculate Q every time self.N updates """
         return self.N.T @ self.N + self.epsilon*torch.eye(self.n)
     
     @property
     def R(self):
-        """ Automatically recalculate Q every time self.N updates """
         return self.M.T @ self.M + self.epsilon*torch.eye(self.m)
 
     def forward(self, input):
@@ -154,7 +122,6 @@ class PDQuadraticStageCost(nn.Module):
         # L4CasADi models can only have 1 input, not (x,u)
         x, u = input[..., :self.n], input[..., self.n:]
         return (x @ self.Q * x).sum(axis=1, keepdims=True) + (u @ self.R * u).sum(axis=1, keepdims=True)
-        # return (x @ self.Q * x).sum(axis=1, keepdims=True)
 
 class PDQuadraticTerminalCost(nn.Module):
     def __init__(self, n, L=None, epsilon=0.001):
@@ -163,11 +130,9 @@ class PDQuadraticTerminalCost(nn.Module):
         self.n = n
         self.L = nn.Parameter(L,requires_grad=True)
         self.epsilon = epsilon
-        # L shares memory with original numpy array
 
     @property
     def P(self):
-        """ Automatically recalculate P every time self.L updates """
         return self.L.T @ self.L + self.epsilon*torch.eye(self.n)
 
     def forward(self, input):
