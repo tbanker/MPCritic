@@ -36,22 +36,15 @@ class MPCritic(nn.Module):
         self.dpcontrol = dpcontrol
 
         self.critic_parameters = nn.ParameterDict({'l': self.dpcontrol.l.module, 'V': self.dpcontrol.V})
-        self.dynamics_parameters = nn.ParameterDict({'f': self.dpcontrol.dynamics.dx.module})
-        self.mu_parameters = nn.ParameterDict({'mu': self.dpcontrol.mu})
-        self.all_parameters = nn.ParameterDict({'l': self.dpcontrol.l.module, 'V': self.dpcontrol.V,
-                                                'f': self.dpcontrol.dynamics.dx.module, 'mu': self.dpcontrol.mu})
-
 
         # Configure network
         self.H = self.dpcontrol.H # mpc horizon per do-mpc
-        # self.x_bias_node = self.dpcontrol.x_bias_node
-        # self.u_bias_node = self.dpcontrol.u_bias_node
         self.dx_node = Node(self.dpcontrol.dynamics.dx, ['x', 'u'], ['x_next'], name='dynamics_model')
         self.goal_node = Node(self.dpcontrol.goal_map, ['x'], ['z'])
         self.mu_node = Node(self.dpcontrol.mu, ['x_next'], ['u'], name='policy')
         self.x_shift = Node(lambda x: x, ['x_next'], ['x'], name='x_shift')
-        self.l_node = self.dpcontrol.l_node # Node(concat_cost, ['x', 'u'], ['l'], name='stage_cost')
-        self.V_node = self.dpcontrol.V_node # Node(self.mpc_mterm, ['x'], ['V'], name='terminal_cost')
+        self.l_node = self.dpcontrol.l_node
+        self.V_node = self.dpcontrol.V_node
         self.model = System([self.goal_node, self.dx_node, self.mu_node, self.x_shift, self.l_node, self.V_node], nsteps=self.H + 2)
         self.model_kwargs = {'dtype' : list(self.model.parameters())[0].dtype,
                              'device' : list(self.model.parameters())[0].device,}
@@ -60,31 +53,19 @@ class MPCritic(nn.Module):
         self.obj = dpcontrol.obj
         self.problem = Problem([self.model], self.obj)
 
-        self.freeze(self.all_parameters)
-        self.unfreeze(self.critic_parameters)
-
         # Critic evaluation functions
         self.batched_fwd_s = torch.vmap(self.forward_critic_s)
         self.batched_fwd_sa = torch.vmap(self.forward_critic_sa)
 
         # MPC settings & objects
         self.mpc_settings = {'n_horizon': self.dpcontrol.H,
-                        'n_robust': 0,
-                        'open_loop': False,
-                        't_step': 1.0,
-                    #  'use_terminal_bounds' : False,
-                    #  'state_discretization' : 'collocation',
-                    #  'collocation_type': 'radau',
-                    #  'collocation_deg': 2,
-                    #  'collocation_ni': 2,
-                    #  'nl_cons_check_colloc_points' : False,
-                    #  'nl_cons_single_slack' : False,
-                    #  'cons_check_colloc_points' : True,
-                        'store_full_solution': True,
-                        'store_lagr_multiplier' : True,
-                    #  'store_solver_stats' : []
-                        'nlpsol_opts': {'ipopt.linear_solver': 'mumps'}, #LQR fails w/ MA27
-                        } if mpc_settings == None else mpc_settings
+                             'n_robust': 0,
+                             'open_loop': False,
+                             't_step': 1.0,
+                             'store_full_solution': True,
+                             'store_lagr_multiplier' : True,
+                             'nlpsol_opts': {'ipopt.linear_solver': 'mumps'},
+                             } if mpc_settings == None else mpc_settings
         self.dx_mpc = self.dpcontrol.dynamics.dx.module
         self.l_mpc = self.dpcontrol.l.module
         self.V_mpc = self.dpcontrol.V
@@ -97,7 +78,7 @@ class MPCritic(nn.Module):
                            'generate_jac' : True,
                            'generate_jac_jac' : True,
                            'generate_jac_adj1' : True,
-                           'generate_adj1' : False,} # LQR fails w/ this
+                           'generate_adj1' : False,}
         self.dx_l4c = l4c.L4CasADi(self.dx_mpc, **self.l4c_kwargs)
         self.l_l4c = l4c.L4CasADi(self.l_mpc, **self.l4c_kwargs)
         self.V_l4c = l4c.L4CasADi(self.V_mpc, **self.l4c_kwargs)
@@ -134,19 +115,11 @@ class MPCritic(nn.Module):
         return self.mpc.make_step(x0)
     
     def _update_dynamics(self, kwargs={}):
-        # self.freeze(self.all_parameters)
-        # self.unfreeze(self.dynamics_parameters)
         self.dpcontrol.dynamics.train(**kwargs)
-        # self.freeze(self.dynamics_parameters)
-        # self.unfreeze(self.critic_parameters) # default state should be critic parameters unfrozen
         return
     
     def _update_controller(self, kwargs={}):
-        # self.freeze(self.all_parameters)
-        # self.unfreeze(self.mu_parameters)
         self.dpcontrol.train(**kwargs)
-        # self.freeze(self.mu_parameters)
-        # self.unfreeze(self.critic_parameters) # default state should be critic parameters unfrozen
         return
 
     def train_f_mu(self, train_f=True, train_mu=True, f_kwargs={}, mu_kwargs={}):
@@ -190,8 +163,6 @@ class MPCritic(nn.Module):
             mpc.bounds['lower','_u','u'] = self.dpcontrol.ulim[0]
             mpc.bounds['upper','_u','u'] = self.dpcontrol.ulim[1]
 
-        # mpc.set_uncertainty_values(**self.unc_p) # save for later
-
         mpc.setup()
 
         self.mpc = mpc
@@ -205,24 +176,10 @@ class MPCritic(nn.Module):
         mpc_data, mpc_t0 = copy(self.mpc.data), copy(self.mpc._t0)
         if full == True:
             self.l4c_update() # update l4c_lterm, mterm, model
-        self.setup_mpc() # update model/uncertain parameters
+        self.setup_mpc()
         self.init_mpc(x0)
 
         self.mpc.data, self.mpc._t0 = mpc_data, mpc_t0
-
-    def freeze(self, param_dict: nn.ParameterDict):
-        """
-        Freezes parameters in a ParameterDict
-        """
-        for name, param in param_dict.items():
-            param.requires_grad = False
-
-    def unfreeze(self, param_dict: nn.ParameterDict):
-        """
-        Unfreezes parameters in a ParameterDict
-        """
-        for name, param in param_dict.items():
-            param.requires_grad = True
 
     def _mpc_state(self, x0):
         return np.float32(np.reshape(x0, self.dpcontrol.env.observation_space.shape[::-1]))
