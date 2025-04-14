@@ -6,7 +6,7 @@ import torch.nn.functional as F
 from torch.distributions.normal import Normal
 
 
-class Actor(nn.Module):
+class SACActor(nn.Module):
     def __init__(self, env):
         super().__init__()
         self.fc1 = nn.Linear(np.array(env.single_observation_space.shape).prod(), 256)
@@ -70,6 +70,5 @@ class Mu(nn.Module):
 
     def forward(self, x):
         mean = self.actor.get_deterministic_action(x)
-
         return mean
 

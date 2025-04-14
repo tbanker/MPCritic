@@ -14,35 +14,19 @@ import tyro
 from stable_baselines3.common.buffers import ReplayBuffer
 from torch.utils.tensorboard import SummaryWriter
 
-
-# neuromancer stuff
-from neuromancer.system import Node, System
-from neuromancer.modules import blocks
-from neuromancer.dynamics import integrators
-from neuromancer.constraint import variable
-from neuromancer.problem import Problem
-from neuromancer.loss import PenaltyLoss
-from neuromancer.dataset import DictDataset
-from neuromancer.trainer import Trainer
-from neuromancer.psl import signals
-import torch.optim as optim
-from torch.utils.data import DataLoader
-
 # MPCritic stuff
 import sys
 sys.path.append('')
-from modules.mpcomponents import QuadraticStageCost, QuadraticTerminalCost, PDQuadraticTerminalCost, LinearDynamics, LinearPolicy, GoalMap
-from modules.mpcritic import MPCritic, InputConcat
-from modules.dynamics import Dynamics
+from modules.mpcomponents import GoalConditionedStageCost, GoalMap
+from modules.mpcritic import MPCritic
 from modules.dpcontrol import DPControl
-from modules.networks import Actor, Mu
-
+from modules.networks import SACActor, Mu
 
 @dataclass
 class Args:
     exp_name: str = os.path.basename(__file__)[: -len(".py")]
     """the name of this experiment"""
-    seed: int = 1
+    seed: int = 0
     """seed of the experiment"""
     torch_deterministic: bool = True
     """if toggled, `torch.backends.cudnn.deterministic=False`"""
@@ -50,7 +34,7 @@ class Args:
     """if toggled, cuda will be enabled by default"""
     track: bool = True
     """if toggled, this experiment will be tracked with Weights and Biases"""
-    wandb_project_name: str = "mpcritic-dev"
+    wandb_project_name: str = "mpcritic-test"
     """the wandb's project name"""
     wandb_entity: str = None
     """the entity (team) of wandb's project"""
@@ -88,11 +72,11 @@ class Args:
     """automatic tuning of the entropy coefficient"""
 
     # MPCritic specific arguments
-    critic_mode: str = "vanilla"
+    critic_mode: str = "mpcritic"
     """choose between `mpcritic` or `vanilla`"""
-    scale: float = 10.0
+    scale: float = 100.0
     """weight coefficient for penalty term in neuromancer"""
-    loss: str = None
+    loss: str = "penalty"
     """method for dealing with constraints ("penalty" or None)"""
     H:int = 5
     """prediction horizon in dpcontrol"""
@@ -165,7 +149,6 @@ class QMPC(nn.Module):
         return -self.Q(x,a)
 
 
-
 if __name__ == "__main__":
     import stable_baselines3 as sb3
 
@@ -207,7 +190,7 @@ poetry run pip install "stable_baselines3==2.0.0a1"
     # env setup
     if "cstr" in args.env_id:
         # goal_map = GoalMap(idx=[1], goal=0.6)
-        goal_map_env = GoalMap(idx=[1], goal=0.6) # define the reward
+        goal_map_env = GoalMap(idx=[1], goal=0.6, learn_goal=False) # define the reward
         goal_map = GoalMap(idx=[1], goal=0.6, learn_goal=False) # define the stage cost
     else:
         goal_map = None
@@ -219,7 +202,7 @@ poetry run pip install "stable_baselines3==2.0.0a1"
 
     # max_action = float(envs.single_action_space.high[0])
 
-    actor = Actor(envs).to(device)
+    actor = SACActor(envs).to(device)
     actor_optimizer = optim.AdamW(list(actor.parameters()), lr=args.policy_lr)
 
     envs.single_observation_space.dtype = np.float32
@@ -241,36 +224,10 @@ poetry run pip install "stable_baselines3==2.0.0a1"
         qf2_target.load_state_dict(qf2.state_dict())
         q_optimizer = optim.AdamW(list(qf1.parameters()) + list(qf2.parameters()), lr=args.q_lr)
     elif args.critic_mode == "mpcritic":
-
         mu = Mu(actor)
-        # mu = None
-        ulim = np.array([envs.action_space.low,envs.action_space.high])
-        # ulim = None
+        ulim = None
         xlim = np.array([envs.observation_space.low,envs.observation_space.high])
-        # xlim = None
-        # scale = 10.0
-        # loss = "penalty"
-        # dpcontrol1 = DPControl(envs, terminal_Q=True, rb=rb, lr=args.policy_lr, mu=mu, linear_dynamics=False, ulim=ulim, xlim=xlim, goal_map=goal_map, scale=args.scale, loss=args.loss, H=args.H).to(device)
-        # dpcontrol2 = DPControl(envs, terminal_Q=True, rb=rb, lr=args.policy_lr, mu=mu, linear_dynamics=False, ulim=ulim, xlim=xlim, goal_map=goal_map, scale=args.scale, loss=args.loss, H=args.H).to(device)
-        # dpcontrol1_target = DPControl(envs, terminal_Q=True, rb=rb, lr=args.policy_lr, mu=mu, linear_dynamics=False, ulim=ulim, xlim=xlim, goal_map=goal_map, scale=args.scale, loss=args.loss, H=args.H).to(device)
-        # dpcontrol2_target = DPControl(envs, terminal_Q=True, rb=rb, lr=args.policy_lr, mu=mu, linear_dynamics=False, ulim=ulim, xlim=xlim, goal_map=goal_map, scale=args.scale, loss=args.loss, H=args.H).to(device)
-        # dpcontrol1_target.load_state_dict(dpcontrol1.state_dict())
-        # dpcontrol2_target.load_state_dict(dpcontrol2.state_dict())
 
-        # qf1 = dpcontrol1.V.to(device)
-        # qf2 = dpcontrol2.V.to(device)
-        # qf1_target = dpcontrol1_target.V.to(device)
-        # qf2_target = dpcontrol2_target.V.to(device)
-        # qf1_target.load_state_dict(qf1.state_dict())
-        # qf2_target.load_state_dict(qf2.state_dict())
-
-        # q_optimizer = optim.AdamW(list(qf1.parameters()) + list(qf2.parameters()), lr=args.q_lr)
-
-        # mpcritic1 = MPCritic(dpcontrol1).to(device)
-        # mpcritic1.requires_grad_(True) # just do it
-
-
-        # second attempt
         qf1 = SoftQNetwork(envs).to(device)
         qf2 = SoftQNetwork(envs).to(device)
         qf1_target = SoftQNetwork(envs).to(device)
@@ -279,32 +236,11 @@ poetry run pip install "stable_baselines3==2.0.0a1"
         qf2_target.load_state_dict(qf2.state_dict())
         q_optimizer = optim.AdamW(list(qf1.parameters()) + list(qf2.parameters()), lr=args.q_lr)
 
-        dpcontrol1 = DPControl(envs, V=QMPC(qf1), terminal_Q=True, rb=rb, lr=args.policy_lr, mu=mu, linear_dynamics=False, ulim=ulim, xlim=xlim, goal_map=goal_map, scale=args.scale, loss=args.loss, H=args.H).to(device)
+        ny = goal_map.ny if goal_map.ny != None else np.prod(envs.single_observation_space.shape)
+        l = GoalConditionedStageCost(ny, np.prod(envs.single_action_space.shape))
+        dpcontrol1 = DPControl(envs, l=l, V=QMPC(qf1), terminal_Q=True, rb=rb, lr=args.policy_lr, mu=mu, linear_dynamics=False, ulim=ulim, xlim=xlim, goal_map=goal_map, scale=args.scale, loss=args.loss, H=args.H).to(device)
         mpcritic1 = MPCritic(dpcontrol1).to(device)
         mpcritic1.requires_grad_(True) # just do it
-
-        # mpcritic2 = MPCritic(dpcontrol2).to(device)
-        # mpcritic2.requires_grad_(True) # just do it
-
-
-        # qf1 = MPCritic(dpcontrol1).to(device)
-        # # qf1.setup_mpc()
-        # qf1.requires_grad_(True) # just do it
-        # qf1_target = MPCritic(dpcontrol1_target).to(device)
-
-        # qf2 = MPCritic(dpcontrol2).to(device)
-        # # qf2.setup_mpc()
-        # qf2.requires_grad_(True) # just do it
-        # qf2_target = MPCritic(dpcontrol2_target).to(device)
-
-        # qf1_params = list()
-        # for p in qf1.critic_parameters.values():
-        #     qf1_params += list(p.parameters())
-        # qf2_params = list()
-        # for p in qf2.critic_parameters.values():
-        #     qf2_params += list(p.parameters())
-
-        # q_optimizer = optim.AdamW(qf1_params + qf2_params, lr=args.q_lr) 
 
     # Automatic entropy tuning
     if args.autotune:
@@ -326,7 +262,6 @@ poetry run pip install "stable_baselines3==2.0.0a1"
         else:
             actions, _, _ = actor.get_action(torch.Tensor(obs).to(device))
             actions = actions.detach().cpu().numpy()
-            # actions = qf1.dpcontrol.mu(torch.Tensor(obs).to(device)).detach().cpu().numpy() # use to validate mu 
 
         # TRY NOT TO MODIFY: execute the game and log data.
         next_obs, rewards, terminations, truncations, infos = envs.step(actions)
@@ -371,8 +306,7 @@ poetry run pip install "stable_baselines3==2.0.0a1"
             qf_loss.backward()
             q_optimizer.step()
 
-
-            if global_step % args.policy_frequency == 0:  # TD 3 Delayed update support
+            if global_step % args.policy_frequency == 0:  # TD3 Delayed update support
                 for _ in range(
                     args.policy_frequency
                 ):  # compensate for the delay by doing 'actor_update_interval' instead of 1
@@ -400,11 +334,8 @@ poetry run pip install "stable_baselines3==2.0.0a1"
             if args.critic_mode == "mpcritic" and global_step % 50 == 0:
                 if global_step < 2*args.learning_starts:
                     mpcritic1.train_f_mu(train_f=True, train_mu=False, f_kwargs={'epochs':50, 'epoch_verbose':5, 'patience':5})
-                    # mpcritic2.train_f_mu(train_f=True, train_mu=False, f_kwargs={'epochs':100, 'epoch_verbose':5, 'patience':5})
-                # else:
-                mpcritic1.train_f_mu(train_f=True, train_mu=True, mu_kwargs={'epochs':1, 'epoch_verbose':5, 'patience':5})
-                # mpcritic2.train_f_mu(train_f=True, train_mu=True) # I think unless mu can joinly minimize mpcritic1 + mpcritic2, doing this individually is detrimental
 
+                mpcritic1.train_f_mu(train_f=True, train_mu=True, mu_kwargs={'epochs':1, 'epoch_verbose':5, 'patience':5})
 
             # update the target networks
             if global_step % args.target_network_frequency == 0:
@@ -429,7 +360,6 @@ poetry run pip install "stable_baselines3==2.0.0a1"
                 )
                 if args.autotune:
                     writer.add_scalar("losses/alpha_loss", alpha_loss.item(), global_step)
-
 
     if args.track:
         torch.save(qf1.state_dict(), exp_path+"/vf.pth")

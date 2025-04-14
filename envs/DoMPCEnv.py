@@ -7,7 +7,6 @@ sys.path.append('')
 import gymnasium as gym
 import numpy as np
 from gymnasium import spaces
-from stable_baselines3.common.env_checker import check_env
 import matplotlib.pyplot as plt
 
 import do_mpc
@@ -91,26 +90,10 @@ class DoMPCEnv(gym.Env):
     
     def compute_reward(self, achieved_goal, info):
 
-        # if type(info) is not dict:
-        #     state = [x["full_state"] for x in info]
-        #     is_feasible = [1*self.observation_space.contains(
-        #         x) - 1 for x in state]
-        # else:
-        #     state = info["full_state"]
-        #     is_feasible = 1*self.observation_space.contains(
-        #         state) - 1
-
-        axis = 0
-        # if achieved_goal.ndim == 2:
-        #     axis = 1
-
-        # print(desired_goal, achieved_goal)
-        # print(desired_goal - achieved_goal)
         is_target = np.abs(achieved_goal).sum() < self.goal_tol
 
         if self.smooth_reward:
             reward = np.exp(-0.5*(np.sum((achieved_goal)**2) / self.goal_tol)**2) - 1
-            # reward = -0.5*np.abs(achieved_goal).sum()
         elif self.sa_reward:
             reward = -np.sum(self.state**2)-10*np.sum(self.action**2)
         else:
@@ -123,8 +106,6 @@ class DoMPCEnv(gym.Env):
         super().reset(seed=seed)
 
         self.episode += 1
-
-        # self.goal = 0.0 # the goal is embedded in goal_map for now)
         
 
         self.simulator = self._define_simulator()

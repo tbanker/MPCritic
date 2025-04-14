@@ -9,20 +9,18 @@ from stable_baselines3.common.buffers import ReplayBuffer
 # neuromancer stuff
 from neuromancer.system import Node, System
 from neuromancer.modules import blocks
-from neuromancer.dynamics import integrators
 from neuromancer.constraint import variable, Objective
 from neuromancer.problem import Problem
-from neuromancer.loss import PenaltyLoss, AugmentedLagrangeLoss
+from neuromancer.loss import PenaltyLoss
 from neuromancer.dataset import DictDataset
 from neuromancer.trainer import Trainer
-from neuromancer.psl import signals
 import torch.optim as optim
 from torch.utils.data import DataLoader
 
 # MPCritic stuff
 import sys
 sys.path.append('')
-from modules.mpcomponents import GoalConditionedStageCost, QuadraticStageCost, PDQuadraticStageCost, QuadraticTerminalCost, PDQuadraticTerminalCost, LinearDynamics, LinearPolicy, GoalMap
+from modules.mpcomponents import QuadraticStageCost, PDQuadraticStageCost, QuadraticTerminalCost, LinearDynamics, LinearPolicy, GoalMap
 from modules.dynamics import Dynamics
 
 
@@ -156,11 +154,9 @@ class DPControl(nn.Module):
             constraints.append(state_upper_bound_penalty)
 
         if self.ulim is not None:
-            # urange = self.ulim[1] - self.ulim[0]
-            # print(urange)
-            # print(self.ulim[0])
-            action_lower_bound_penalty = (self.scale) * (u > self.ulim[0])
-            action_upper_bound_penalty = (self.scale) * (u < self.ulim[1])
+            urange = self.ulim[1] - self.ulim[0]
+            action_lower_bound_penalty = self.scale * ((u / torch.from_numpy(urange)) > (self.ulim[0] / urange))
+            action_upper_bound_penalty = self.scale * ((u / torch.from_numpy(urange)) < (self.ulim[1] / urange))
             action_lower_bound_penalty.name = 'u_min'
             action_upper_bound_penalty.name = 'u_max'
 

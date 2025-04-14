@@ -1,12 +1,13 @@
-casadi==3.7.0
+casadi==3.6.7
 do_mpc==4.6.5
 gymnasium==0.28.1
 l4casadi==2.0.0
 matplotlib==3.10.1
 neuromancer==1.5.2
-numpy==1.26.4
+numpy==1.23.5
 pandas==2.2.3
 scipy==1.15.2
 stable_baselines3==2.0.0
-torch==2.5.1
+torch==2.6.0
 tyro==0.9.18
+tensorboard==2.19.0
