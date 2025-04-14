@@ -31,6 +31,7 @@ class DoMPCEnv(gym.Env):
                     smooth_reward=True,
                     episode_plot=None,
                     sa_reward=False,
+                    sa_reward_scale=10,
                     eval="",
                     path=''):        
         super().__init__()
@@ -47,6 +48,7 @@ class DoMPCEnv(gym.Env):
         self.path=path
         self.smooth_reward = smooth_reward
         self.sa_reward = sa_reward
+        self.sa_reward_scale = sa_reward_scale
         self.bounds = bounds 
         self.n,_ = model._x.cat.shape
         self.m,_ = model._u.cat.shape
@@ -112,7 +114,7 @@ class DoMPCEnv(gym.Env):
             reward = np.exp(-0.5*(np.sum((achieved_goal)**2) / self.goal_tol)**2) - 1
             # reward = -0.5*np.abs(achieved_goal).sum()
         elif self.sa_reward:
-            reward = -np.sum(self.state**2)-10*np.sum(self.action**2)
+            reward = -np.sum(self.state**2)-self.sa_reward_scale*np.sum(self.action**2)
         else:
             reward = 1*is_target
             # reward = 1*is_feasible + 1*is_target # can tune this, but we opt to use mpc for constraint handling
@@ -235,19 +237,11 @@ class DoMPCEnv(gym.Env):
 
 if __name__ == '__main__':
     import os
-    class HiddenPrints:
-        def __enter__(self):
-            self._original_stdout = sys.stdout
-            sys.stdout = open(os.devnull, 'w')
-
-        def __exit__(self, exc_type, exc_val, exc_tb):
-            sys.stdout.close()
-            sys.stdout = self._original_stdout
-
-    print("Checking CSTR")
-
     import sys
     sys.path.append('')
+
+    # print("Checking CSTR")
+
     # from envs.CSTR.template_model import template_model
     # from envs.CSTR.template_mpc import template_mpc
     # from envs.CSTR.template_simulator import template_simulator
@@ -282,16 +276,12 @@ if __name__ == '__main__':
     from envs.LQR.template_simulator import template_simulator
 
     n, m = 4, 4
+    xlim = np.vstack([-1*np.ones(n), 1*np.ones(n)])
+    ulim = np.vstack([-1*np.ones(m), 1*np.ones(m)])
+    bounds = {'x_low' : xlim[0], 'x_high' : xlim[1], 'u_low' : ulim[0], 'u_high' : ulim[1]}
 
     model = template_model(n, m)
     mpc = template_mpc(model, mpc_mode="nominal")
-
-    # simulator = template_simulator(model)
-    max_x = np.ones(n).flatten()
-    min_x = -np.ones(n).flatten() # writing like this to emphasize do-mpc sizing convention
-    max_u = np.ones(m).flatten()
-    min_u = -np.ones(m).flatten()
-    bounds = {'x_low' : min_x, 'x_high' : max_x, 'u_low' : min_u, 'u_high' : max_u}
 
     # run environment
     gym.register(

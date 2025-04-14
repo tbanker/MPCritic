@@ -4,6 +4,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.distributions.normal import Normal
+from neuromancer.modules import blocks
 
 
 class Actor(nn.Module):
@@ -62,7 +63,6 @@ class Actor(nn.Module):
         return mean
         
     
-
 class Mu(nn.Module):
     def __init__(self, Actor):
         super().__init__()
@@ -73,3 +73,41 @@ class Mu(nn.Module):
 
         return mean
 
+
+class QNetwork_TD3(nn.Module):
+    def __init__(self, env):
+        super().__init__()
+        self.fc1 = nn.Linear(np.array(env.single_observation_space.shape).prod() + np.prod(env.single_action_space.shape), 256)
+        self.fc2 = nn.Linear(256, 256)
+        self.fc3 = nn.Linear(256, 1)
+
+    def forward(self, x, a):
+        x = torch.cat([x, a], 1)
+        x = F.relu(self.fc1(x))
+        x = F.relu(self.fc2(x))
+        x = self.fc3(x)
+        return x
+
+
+class Actor_TD3(nn.Module):
+    def __init__(self, env):
+        super().__init__()
+        self.mlp_bounds = blocks.MLP_bounds(insize=np.array(env.single_observation_space.shape).prod(), outsize=np.array(env.single_action_space.shape).prod(), bias=True, linear_map=torch.nn.Linear, nonlin=torch.nn.ReLU, hsizes=[100 for h in range(2)], min=torch.from_numpy(env.action_space.low), max=torch.from_numpy(env.action_space.high))
+        # action rescaling
+        self.register_buffer(
+            "action_scale",
+            torch.tensor(
+                (env.single_action_space.high - env.single_action_space.low) / 2.0,
+                dtype=torch.float32,
+            ),
+        )
+        self.register_buffer(
+            "action_bias",
+            torch.tensor(
+                (env.single_action_space.high + env.single_action_space.low) / 2.0,
+                dtype=torch.float32,
+            ),
+        )
+
+    def forward(self, x):
+        return self.mlp_bounds(x)

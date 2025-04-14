@@ -25,7 +25,6 @@ from neuromancer.dataset import DictDataset
 from neuromancer.trainer import Trainer
 from neuromancer.psl import signals
 import torch.optim as optim
-from torch.utils.data import DataLoader
 
 # MPCritic stuff
 import sys
@@ -35,7 +34,8 @@ from modules.mpcritic import MPCritic, InputConcat
 from modules.dynamics import Dynamics
 from modules.dpcontrol import DPControl
 from modules.utils import calc_K, calc_P
-
+from modules.networks import QNetwork_TD3 as QNetwork
+from modules.networks import Actor_TD3 as Actor
 
 @dataclass
 class Args:
@@ -47,9 +47,9 @@ class Args:
     """if toggled, `torch.backends.cudnn.deterministic=False`"""
     cuda: bool = True
     """if toggled, cuda will be enabled by default"""
-    track: bool = False
+    track: bool = True
     """if toggled, this experiment will be tracked with Weights and Biases"""
-    wandb_project_name: str = "mpcritic-dev"
+    wandb_project_name: str = "mpcritic-plot-test"
     """the wandb's project name"""
     wandb_entity: str = None
     """the entity (team) of wandb's project"""
@@ -65,7 +65,7 @@ class Args:
     # Algorithm specific arguments
     env_id: str = "lqr-v0"
     """the id of the environment"""
-    total_timesteps: int = 5101 # 50001
+    total_timesteps: int = 50001
     """total timesteps of the experiments"""
     learning_rate: float = 1e-5
     """the learning rate of the optimizer"""
@@ -97,7 +97,7 @@ class Args:
     """intermediate saving of parameters"""
 
     # MPCritic specific arguments
-    critic_mode: str = "vanilla"
+    critic_mode: str = "mpcritic"
     """choose between `mpcritic` or `vanilla`"""
     mpc_actor: bool = True
     """use mpc actor based on mpcritic, or use a separately trained nn actor"""
@@ -146,54 +146,6 @@ def make_env(env_id, seed, idx, capture_video, run_name, path, goal_map):
         return env
 
     return thunk
-
-
-# ALGO LOGIC: initialize agent here:
-class QNetwork(nn.Module):
-    def __init__(self, env):
-        super().__init__()
-        self.fc1 = nn.Linear(np.array(env.single_observation_space.shape).prod() + np.prod(env.single_action_space.shape), 256)
-        self.fc2 = nn.Linear(256, 256)
-        self.fc3 = nn.Linear(256, 1)
-
-    def forward(self, x, a):
-        x = torch.cat([x, a], 1)
-        x = F.relu(self.fc1(x))
-        x = F.relu(self.fc2(x))
-        x = self.fc3(x)
-        return x
-
-
-class Actor(nn.Module):
-    def __init__(self, env):
-        super().__init__()
-        self.mlp_bounds = blocks.MLP_bounds(insize=np.array(env.single_observation_space.shape).prod(), outsize=np.array(env.single_action_space.shape).prod(), bias=True, linear_map=torch.nn.Linear, nonlin=torch.nn.ReLU, hsizes=[100 for h in range(2)], min=torch.from_numpy(env.action_space.low), max=torch.from_numpy(env.action_space.high))
-        # self.fc1 = nn.Linear(np.array(env.single_observation_space.shape).prod(), 64)
-        # self.fc2 = nn.Linear(64, 64)
-        # self.fc_mu = nn.Linear(64, np.prod(env.single_action_space.shape))
-        # action rescaling
-        self.register_buffer(
-            "action_scale",
-            torch.tensor(
-                (env.single_action_space.high - env.single_action_space.low) / 2.0,
-                dtype=torch.float32,
-            ),
-        )
-        self.register_buffer(
-            "action_bias",
-            torch.tensor(
-                (env.single_action_space.high + env.single_action_space.low) / 2.0,
-                dtype=torch.float32,
-            ),
-        )
-
-    def forward(self, x):
-        # x = F.relu(self.fc1(x))
-        # x = F.relu(self.fc2(x))
-        # x = torch.tanh(self.fc_mu(x))
-        # return x * self.action_scale + self.action_bias
-        return self.mlp_bounds(x)
-
 
 if __name__ == "__main__":
     import stable_baselines3 as sb3
@@ -455,38 +407,6 @@ poetry run pip install "stable_baselines3==2.0.0a1"
         else:
             torch.save(actor.state_dict(), f"runs/{run_name}/actor.pt")
             torch.save(qf1.state_dict(), f"runs/{run_name}/critic.pt")
-
-        # model_path = f"runs/{run_name}/{args.exp_name}.cleanrl_model"
-        # torch.save((actor.state_dict(), qf1.state_dict(), qf2.state_dict()), model_path)
-        # print(f"model saved to {model_path}")
-        # from cleanrl_utils.evals.td3_eval import evaluate
-
-        # episodic_returns = evaluate(
-        #     model_path,
-        #     make_env,
-        #     args.env_id,
-        #     eval_episodes=10,
-        #     run_name=f"{run_name}-eval",
-        #     Model=(Actor, QNetwork),
-        #     device=device,
-        #     exploration_noise=args.exploration_noise,
-        # )
-        # for idx, episodic_return in enumerate(episodic_returns):
-        #     writer.add_scalar("eval/episodic_return", episodic_return, idx)
-
-        # if args.upload_model:
-        #     from cleanrl_utils.huggingface import push_to_hub
-
-        #     repo_name = f"{args.env_id}-{args.exp_name}-seed{args.seed}"
-        #     repo_id = f"{args.hf_entity}/{repo_name}" if args.hf_entity else repo_name
-        #     push_to_hub(
-        #         args,
-        #         episodic_returns,
-        #         repo_id,
-        #         "TD3",
-        #         f"runs/{run_name}",
-        #         f"videos/{run_name}-eval",
-        #     )
 
     if args.track:
         wandb.finish()

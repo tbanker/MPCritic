@@ -1,6 +1,7 @@
+import os
+import sys
 import numpy as np
 from scipy.linalg import solve_discrete_are
-from scipy.special import comb, factorial
 import torch
 
 def calc_P(A, B, Q, R):
@@ -36,3 +37,12 @@ def fill_rb(rb, envs, obs, policy=None, sampling="Normal", n_samples=1000):
         obs = next_obs
 
     return obs
+
+class HiddenPrints:
+    def __enter__(self):
+        self._original_stdout = sys.stdout
+        sys.stdout = open(os.devnull, 'w')
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        sys.stdout.close()
+        sys.stdout = self._original_stdout
