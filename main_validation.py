@@ -12,32 +12,15 @@ import tyro
 from stable_baselines3.common.buffers import ReplayBuffer
 from dataclasses import dataclass
 
-from modules.templates import LQREnv
 from modules.mpcomponents import QuadraticStageCost, QuadraticTerminalCost, PDQuadraticTerminalCost, LinearDynamics, LinearPolicy, GoalMap
 from modules.mpcritic import MPCritic, InputConcat
 from modules.dynamics import Dynamics
 from modules.dpcontrol import DPControl
-from modules.utils import calc_K, calc_P, fill_rb
+from modules.utils import calc_K, calc_P, fill_rb, HiddenPrints
 
 np_kwargs = {'dtype' : np.float32}
 kwargs = {'dtype' : torch.float32,
           'device' : 'cpu'}
-
-class HiddenPrints:
-    def __enter__(self):
-        self._original_stdout = sys.stdout
-        sys.stdout = open(os.devnull, 'w')
-
-    def __exit__(self, exc_type, exc_val, exc_tb):
-        sys.stdout.close()
-        sys.stdout = self._original_stdout
-
-""" CleanRL setup """
-gym.register(
-    id="gymnasium_env/LQR-v0",
-    entry_point=LQREnv,
-    kwargs={'max_timesteps': 1} # designed to randomly initialize state, take action, and then restart environment
-)
 
 @dataclass
 class Args:
@@ -51,7 +34,7 @@ class Args:
     """if toggled, cuda will be enabled by default"""
     track: bool = False
     """if toggled, this experiment will be tracked with Weights and Biases"""
-    wandb_project_name: str = "cleanRL"
+    wandb_project_name: str = "mpcritic-dev"
     """the wandb's project name"""
     wandb_entity: str = None
     """the entity (team) of wandb's project"""
@@ -65,12 +48,14 @@ class Args:
     """the user or org name of the model repository from the Hugging Face Hub"""
 
     # Algorithm specific arguments
-    env_id: str = "gymnasium_env/LQR-v0" # "Hopper-v4"
+    env_id: str = "lqr-v0"
     """the environment id of the Atari game"""
     total_timesteps: int = 10000
     """total timesteps of the experiments"""
     learning_rate: float = 3e-4
     """the learning rate of the optimizer"""
+    num_envs: int = 1
+    """the number of parallel game environments"""
     buffer_size: int = int(1e6)
     """the replay memory buffer size"""
     gamma: float = 0.99
@@ -79,6 +64,8 @@ class Args:
     """target smoothing coefficient (default: 0.005)"""
     batch_size: int = 256
     """the batch size of sample from the reply memory"""
+    policy_noise: float = 0.2
+    """the scale of policy noise"""
     exploration_noise: float = 0.1
     """the scale of exploration noise"""
     learning_starts: int = 25e3
@@ -88,20 +75,13 @@ class Args:
     noise_clip: float = 0.5
     """noise clip parameter of the Target Policy Smoothing Regularization"""
 
-def make_env(env_id, seed, idx, capture_video, run_name):
-    def thunk():
-        if capture_video and idx == 0:
-            env = gym.make(env_id, render_mode="rgb_array")
-            env = gym.wrappers.RecordVideo(env, f"videos/{run_name}")
-        else:
-            env = gym.make(env_id)
-        env = gym.wrappers.RecordEpisodeStatistics(env)
-        env.action_space.seed(seed)
-        return env
-
-    return thunk
+    # LQR specific arguments
+    n: int = 4
+    """state AND action dimension"""
 
 def validation_test(
+    args,
+    make_env,
     learn_dynamics, 
     learn_dpcontrol,
     learn_mpcritic,
@@ -125,33 +105,33 @@ def validation_test(
         'epochs':1, 'epoch_verbose':1, 'patience':1,
     }
 
-    args = tyro.cli(Args)
-    args.seed = seed
-    args.buffer_size = n_samples
-    args.batch_size = batch_size
+    run_name = f"{args.env_id}__{args.exp_name}__{args.seed}__{int(time.time())}"
 
     random.seed(args.seed)
     np.random.seed(args.seed)
     torch.manual_seed(args.seed)
     torch.backends.cudnn.deterministic = args.torch_deterministic
 
-    n_envs = 1
-    run_name = f"{args.env_id}__{args.exp_name}__{args.seed}__{int(time.time())}"
-    envs = gym.vector.SyncVectorEnv([make_env(args.env_id, args.seed, 0, args.capture_video, run_name) for _ in range(n_envs)])
+    goal_map = GoalMap()
+    exp_path = f"runs/{run_name}/"
+    envs = gym.vector.SyncVectorEnv(
+        [make_env(args.env_id, args.seed, 0, args.capture_video, run_name, exp_path, goal_map) for i in range(args.num_envs)]
+    )
 
     rb = ReplayBuffer(
         args.buffer_size,
         envs.single_observation_space,
         envs.single_action_space,
         device=kwargs['device'],
+        n_envs=args.num_envs,
         handle_timeout_termination=False,
-        n_envs=n_envs
     )
 
     """ System information """
-    n, m = envs.get_attr("n")[0], envs.get_attr("m")[0]
-    A_env, B_env = envs.get_attr("A")[0], envs.get_attr("B")[0]
-    Q, R = envs.get_attr("Q")[0], envs.get_attr("R")[0]
+    obs, _ = envs.reset(seed=args.seed)
+    b, n, m = envs.num_envs, envs.get_attr("n")[0], envs.get_attr("m")[0]
+    A_env, B_env = envs.envs[0].simulator.p_fun(0)['A'].full().astype(np_kwargs['dtype']), envs.envs[0].simulator.p_fun(0)['B'].full().astype(np_kwargs['dtype'])
+    Q, R = np.diag(np.ones(n)).astype(np_kwargs['dtype']), envs.envs[0].sa_reward_scale*np.diag(np.ones(m)).astype(np_kwargs['dtype'])
 
     K_opt = calc_K(A_env, B_env, Q, R).astype(np_kwargs['dtype'])
     P_opt = calc_P(A_env, B_env, Q, R).astype(np_kwargs['dtype'])
@@ -178,9 +158,7 @@ def validation_test(
 
     dpcontrol = DPControl(envs, H=H, rb=rb, dynamics=dynamics, V=V, l=l, mu=mu, goal_map=GoalMap(), lr=lr, opt="AdamW")
 
-    unc_p = {'A' : [A_mpc],
-             'B' : [B_mpc]} # 1 uncertainty scenario considered
-    critic = MPCritic(dpcontrol, unc_p=unc_p)
+    critic = MPCritic(dpcontrol)
     critic.setup_mpc()
 
     """ Learning Q-function """
@@ -259,14 +237,8 @@ def validation_test(
         torch.save(results, file_path)
 
 if __name__ == '__main__':
-    from modules.utils import stable, controllable
-    from scipy.linalg import block_diag
-
     seeds = list(range(20))
     exp_dicts = {
-        # 'learn_f' :         {'learn_dynamics':True,  'learn_dpcontrol':False, 'learn_mpcritic':False, 'pd_V':False, },
-        # 'learn_mu' :        {'learn_dynamics':False, 'learn_dpcontrol':True,  'learn_mpcritic':False, 'pd_V':False, },
-        # 'learn_V_pd' :      {'learn_dynamics':False, 'learn_dpcontrol':False, 'learn_mpcritic':True,  'pd_V':True, },
         'learn_f_mu_V_pd' : {'learn_dynamics':True,  'learn_dpcontrol':True,  'learn_mpcritic':True,  'pd_V':True, },
     }
 
@@ -274,32 +246,55 @@ if __name__ == '__main__':
     m_list = n_list
     for seed in seeds:
         for n, m in zip(n_list, m_list):
-            A = np.diag(1.01*np.ones(n)) + np.diag(0.01*np.ones(n-1), k=1) + np.diag(0.01*np.ones(n-1), k=-1)
-            if n > m:
-                B = np.diag(np.ones(m))
-                B = np.concatenate([B]*(n//m), axis=0)
-            elif n < m:
-                B = np.diag(np.ones(n))
-                B = np.concatenate([B]*(m//n), axis=1)
-            else:
-                B = np.diag(np.ones(m))
-            A, B = A.astype(np_kwargs['dtype']), B.astype(np_kwargs['dtype'])
-            stable(A)
-            controllable(A, B)
 
-            gym.register(
-                id="gymnasium_env/LQR-v0",
-                entry_point=LQREnv,
-                kwargs={'A' : A,
-                        'B' : B,
-                        'Q' : np.diag(np.ones(A.shape[0], **np_kwargs)),
-                        'R' : 1000*np.diag(np.ones(B.shape[1], **np_kwargs)),
-                        'max_timesteps': 1} # designed to randomly initialize state, take action, and then restart environment
-            )
+            def make_env(env_id, seed, idx, capture_video, run_name, path, goal_map):
+                if "lqr" in env_id:
+                    from envs.LQR.template_model import template_model
+                    from envs.LQR.template_mpc import template_mpc
+                    from envs.LQR.template_simulator import template_simulator
+                    from envs.DoMPCEnv import DoMPCEnv
 
+                    gym.register(
+                    id=env_id,
+                    entry_point=DoMPCEnv,
+                        )  
+
+                    model = template_model(n=n, m=n)
+                    max_x = np.ones(n).flatten()
+                    min_x = -np.ones(n).flatten() # writing like this to emphasize do-mpc sizing convention
+                    max_u = np.ones(n).flatten()
+                    min_u = -np.ones(n).flatten()
+                    bounds = {'x_low' : min_x, 'x_high' : max_x, 'u_low' : min_u, 'u_high' : max_u}
+                    goal_map = goal_map
+                    num_steps = 1
+                    kwargs = {'disable_env_checker': True, 'template_simulator': template_simulator, 'model': model,
+                            'num_steps': num_steps, 'bounds': bounds, 'same_state': None,
+                            'goal_map': goal_map, 'smooth_reward': False, 'sa_reward': True, 'sa_reward_scale': 1000,
+                            'path': path}
+
+                else:
+                    kwargs = {}
+
+                def thunk():
+                    if capture_video and idx == 0:
+                        env = gym.make(env_id, render_mode="rgb_array")
+                        env = gym.wrappers.RecordVideo(env, f"videos/{run_name}")
+                    else:
+                        env = gym.make(env_id, **kwargs)
+                    env = gym.wrappers.RecordEpisodeStatistics(env)
+                    env.action_space.seed(seed)
+                    return env
+
+                return thunk  
+
+            args = tyro.cli(Args)
+            args.seed = seed
+            args.n = n   
 
             for exp_dict in exp_dicts.values():
                 validation_test(
+                    args,
+                    make_env,
                     learn_dynamics = exp_dict['learn_dynamics'],
                     learn_dpcontrol = exp_dict['learn_dpcontrol'],
                     learn_mpcritic = exp_dict['learn_mpcritic'],
@@ -312,7 +307,7 @@ if __name__ == '__main__':
                     n_samples = 100000,
                     sampling = "Uniform",
 
-                    save_results = False,
+                    save_results=True,
                     save_less=True,
                 )
 

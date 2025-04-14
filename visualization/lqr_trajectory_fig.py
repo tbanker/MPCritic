@@ -11,11 +11,12 @@ from neuromancer.modules import blocks
 
 sys.path.append('')
 # from algos.ddpg_continuous_action import Args, Actor
-from algos.td3_continuous_action import Args, Actor
+from algos.td3_continuous_action import Args
 from modules.mpcomponents import QuadraticStageCost, QuadraticTerminalCost, PDQuadraticStageCost, PDQuadraticTerminalCost, LinearDynamics, LinearPolicy, GoalMap
 from modules.mpcritic import MPCritic, InputConcat
 from modules.dynamics import Dynamics
 from modules.dpcontrol import DPControl
+from modules.networks import Actor_TD3 as Actor
 
 plt.style.use('visualization/ieee.mplstyle')
 plt.style.use('tableau-colorblind10')
@@ -96,7 +97,7 @@ def load_controllers(run_names:dict, envs, global_step=None):
     dpcontrol = DPControl(envs, H=10, mu=mu, linear_dynamics=True, V=V, rb=None, goal_map=goal_map, lr=args.learning_rate, xlim=np.array([envs.observation_space.low,envs.observation_space.high]), ulim=np.concatenate([envs.action_space.low,envs.action_space.high], axis=0)).to('cpu')
     mpcritic = MPCritic(dpcontrol).to('cpu')
     mpcritic_state_dict = torch.load(f"runs/{run_names['mpc']}/mpcritic.pt") if global_step is None else torch.load(f"runs/{run_names['mpc']}/mpcritic{global_step}.pt")
-    mpcritic.load_state_dict(mpcritic_state_dict) # previous experiments used mpcritic parameter formulation
+    mpcritic.load_state_dict(mpcritic_state_dict, strict=False) # previous experiments used mpcritic parameter formulation
     mpcritic.l4c_update()
     mpcritic.setup_mpc()
 

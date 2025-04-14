@@ -94,7 +94,6 @@ if __name__ == '__main__':
     m_list = n_list
     seeds = np.arange(20).astype(np.int64)
 
-    # batch_limit = int(4*1e4+2)
     res_dicts = {f"n={n}_m={m}":{
         'f_maes':[],
         'K_maes':[],
@@ -170,32 +169,16 @@ if __name__ == '__main__':
     exp_key = 'n=128_m=128'
     y0s = [res_dicts[exp_key][key] for key in ['f_rmses_avg', 'K_rmses_avg', 'P_rmses_avg']]
     yerr0s = [2*res_dicts[exp_key][key] for key in ['f_rmses_std', 'K_rmses_std', 'P_rmses_std']]
-    # y0s = [res_dicts[exp_key][key] for key in ['f_relerrs_avg', 'K_relerrs_avg', 'P_relerrs_avg']]
-    # yerr0s = [2*res_dicts[exp_key][key] for key in ['f_relerrs_std', 'K_relerrs_std', 'P_relerrs_std']]
-    # y0s = [res_dicts[exp_key][key] for key in ['f_maes_avg', 'K_maes_avg', 'P_maes_avg']]
-    # yerr0s = [2*res_dicts[exp_key][key] for key in ['f_maes_std', 'K_maes_std', 'P_maes_std']]
     x0s = [100*np.arange(len(res_dicts[exp_key]["P_rmses_avg"]))] * len(y0s)
     leglabel0s = [r'$A,B$', r'$K$', r'$P$']
     color0s = [f'C{i}' for i in range(len(leglabel0s))]
 
     plotdata0 = {'xs':x0s, 'ys':y0s, 'yerrs':yerr0s, 'leglabels':leglabel0s, 'colors':color0s}
 
-    # P for all n,m
-    # exp_keys = list(res_dicts.keys())
-    # y1s = [res_dicts[key]["P_rmses_avg"] for key in exp_keys]
-    # yerr1s = [2*res_dicts[key]["P_rmses_std"] for key in exp_keys]
-    # x1s = x0s
-    # leglabel1s = [None]*len(exp_keys)
-    # color1s = color0s
-
     # A-BK closed-loop for all n,m
     exp_keys = list(res_dicts.keys())
     y1s = [res_dicts[key]["cl_rmses_avg"] for key in exp_keys]
     yerr1s = [2*res_dicts[key]["cl_rmses_std"] for key in exp_keys]
-    # y1s = [res_dicts[key]["cl_relerrs_avg"] for key in exp_keys]
-    # yerr1s = [2*res_dicts[key]["cl_relerrs_std"] for key in exp_keys]
-    # y1s = [res_dicts[key]["cl_maes_avg"] for key in exp_keys]
-    # yerr1s = [2*res_dicts[key]["cl_maes_std"] for key in exp_keys]
     x1s = [x0s[0]] * len(y1s)
     leglabel1s = [key.split('=')[-1] for key in exp_keys] # [r"$n=m=$ "+key.split('=')[-1] for key in exp_keys] # [None, None, r'$P=L^{\top}L + \epsilon I$']
     color1s = [f'C{i}' for i in range(len(leglabel0s),len(leglabel0s)+len(exp_keys))]
@@ -209,9 +192,8 @@ if __name__ == '__main__':
                 P rmse: {res_dicts[exp_key]['P_rmses_avg'][-1]:.2e}+-{2*res_dicts[exp_key]['P_rmses_std'][-1]:.2e},\n\
                 cl rmse: {res_dicts[exp_key]['cl_rmses_avg'][-1]:.2e}+-{2*res_dicts[exp_key]['cl_rmses_std'][-1]:.2e}\n")
 
-    # fig, axes = plot_2losses(plotdata0, plotdata1, ylabels=["$M$", "$A-BK$"], xlabel='Batch Number')
     fig, axes = plot_1losses(plotdata1, ylabel="$A-BK$ (RMSE)", xlabel='Batch Number')
 
     save_dir = os.path.join(os.path.dirname(__file__), "validation")
     os.makedirs(save_dir, exist_ok=True)
-    fig.savefig(os.path.join(save_dir, f"{date}_validation_scaling"))
+    fig.savefig(os.path.join(save_dir, f"{date}_validation_scaling_test"))

@@ -186,14 +186,7 @@ if __name__ == "__main__":
 
     from dynamics import Dynamics
     from mpcomponents import QuadraticStageCost, QuadraticTerminalCost, LinearDynamics, LinearPolicy, GoalMap
-    from templates import LQREnv
-    from utils import calc_K, calc_P, fill_rb
-
-    """ CleanRL setup """
-    gym.register(
-        id="gymnasium_env/LQR-v0",
-        entry_point=LQREnv,
-    )
+    from utils import calc_K, calc_P, fill_rb, HiddenPrints
 
     @dataclass
     class Args:
@@ -207,7 +200,7 @@ if __name__ == "__main__":
         """if toggled, cuda will be enabled by default"""
         track: bool = False
         """if toggled, this experiment will be tracked with Weights and Biases"""
-        wandb_project_name: str = "cleanRL"
+        wandb_project_name: str = "mpcritic-dev"
         """the wandb's project name"""
         wandb_entity: str = None
         """the entity (team) of wandb's project"""
@@ -221,20 +214,24 @@ if __name__ == "__main__":
         """the user or org name of the model repository from the Hugging Face Hub"""
 
         # Algorithm specific arguments
-        env_id: str = "gymnasium_env/LQR-v0" # "Hopper-v4"
+        env_id: str = "lqr-v0"
         """the environment id of the Atari game"""
         total_timesteps: int = 10000
         """total timesteps of the experiments"""
         learning_rate: float = 3e-4
         """the learning rate of the optimizer"""
+        num_envs: int = 1
+        """the number of parallel game environments"""
         buffer_size: int = int(1e6)
         """the replay memory buffer size"""
         gamma: float = 0.99
         """the discount factor gamma"""
         tau: float = 0.005
         """target smoothing coefficient (default: 0.005)"""
-        batch_size: int = 64
+        batch_size: int = 256
         """the batch size of sample from the reply memory"""
+        policy_noise: float = 0.2
+        """the scale of policy noise"""
         exploration_noise: float = 0.1
         """the scale of exploration noise"""
         learning_starts: int = 25e3
@@ -244,13 +241,44 @@ if __name__ == "__main__":
         noise_clip: float = 0.5
         """noise clip parameter of the Target Policy Smoothing Regularization"""
 
-    def make_env(env_id, seed, idx, capture_video, run_name):
+        # LQR specific arguments
+        n: int = 4
+        """state AND action dimension"""
+
+    def make_env(env_id, seed, idx, capture_video, run_name, path, goal_map):
+        if "lqr" in env_id:
+            from envs.LQR.template_model import template_model
+            from envs.LQR.template_mpc import template_mpc
+            from envs.LQR.template_simulator import template_simulator
+            from envs.DoMPCEnv import DoMPCEnv
+
+            gym.register(
+            id=env_id,
+            entry_point=DoMPCEnv,
+                )  
+
+            model = template_model(n=args.n, m=args.n)
+            max_x = np.ones(args.n).flatten()
+            min_x = -np.ones(args.n).flatten() # writing like this to emphasize do-mpc sizing convention
+            max_u = np.ones(args.n).flatten()
+            min_u = -np.ones(args.n).flatten()
+            bounds = {'x_low' : min_x, 'x_high' : max_x, 'u_low' : min_u, 'u_high' : max_u}
+            goal_map = goal_map
+            num_steps = 50
+            kwargs = {'disable_env_checker': True, 'template_simulator': template_simulator, 'model': model,
+                    'num_steps': num_steps, 'bounds': bounds, 'same_state': None,
+                    'goal_map': goal_map, 'smooth_reward': False, 'sa_reward': True,
+                    'path': path}
+
+        else:
+            kwargs = {}
+    
         def thunk():
             if capture_video and idx == 0:
                 env = gym.make(env_id, render_mode="rgb_array")
                 env = gym.wrappers.RecordVideo(env, f"videos/{run_name}")
             else:
-                env = gym.make(env_id)
+                env = gym.make(env_id, **kwargs)
             env = gym.wrappers.RecordEpisodeStatistics(env)
             env.action_space.seed(seed)
             return env
@@ -258,35 +286,39 @@ if __name__ == "__main__":
         return thunk
 
     args = tyro.cli(Args)
+    run_name = f"{args.env_id}__{args.exp_name}__{args.seed}__{int(time.time())}"
 
     random.seed(args.seed)
     np.random.seed(args.seed)
     torch.manual_seed(args.seed)
     torch.backends.cudnn.deterministic = args.torch_deterministic
 
-    n_envs = 1
-    run_name = f"{args.env_id}__{args.exp_name}__{args.seed}__{int(time.time())}"
-    envs = gym.vector.SyncVectorEnv([make_env(args.env_id, args.seed, 0, args.capture_video, run_name) for _ in range(n_envs)])
+    goal_map = GoalMap()
+    exp_path = f"runs/{run_name}/"
+    envs = gym.vector.SyncVectorEnv(
+        [make_env(args.env_id, args.seed, 0, args.capture_video, run_name, exp_path, goal_map) for i in range(args.num_envs)]
+    )
 
     rb = ReplayBuffer(
         args.buffer_size,
         envs.single_observation_space,
         envs.single_action_space,
         device=kwargs['device'],
+        n_envs=args.num_envs,
         handle_timeout_termination=False,
-        n_envs=n_envs
     )
 
     """ System information """
-    n, m = envs.get_attr("n")[0], envs.get_attr("m")[0]
-    A_env, B_env = envs.get_attr("A")[0], envs.get_attr("B")[0]
-    Q, R = envs.get_attr("Q")[0], envs.get_attr("R")[0]
+    obs, _ = envs.reset(seed=args.seed)
+    b, n, m = envs.num_envs, envs.get_attr("n")[0], envs.get_attr("m")[0]
+    A_env, B_env = envs.envs[0].simulator.p_fun(0)['A'].full().astype(np_kwargs['dtype']), envs.envs[0].simulator.p_fun(0)['B'].full().astype(np_kwargs['dtype'])
+    Q, R = np.diag(np.ones(n)).astype(np_kwargs['dtype']), envs.envs[0].sa_reward_scale*np.diag(np.ones(m)).astype(np_kwargs['dtype'])
     
     K_opt = calc_K(A_env, B_env, Q, R)
 
     """ Model setup """
-    A = A_env
-    B = B_env
+    A = A_env.astype(np_kwargs['dtype'])
+    B = B_env.astype(np_kwargs['dtype'])
     K = np.random.uniform(-1., 1., (m,n)).astype(np_kwargs['dtype'])
     P = calc_P(A, B, Q, R).astype(np_kwargs['dtype'])
     
@@ -307,22 +339,14 @@ if __name__ == "__main__":
     K_init = K.copy()
     print(f"Before training: 'Distance' from optimal gain: {np.linalg.norm(K_opt - K_init, 'fro')}")
 
-    """ Scheme 1 """
-    trainer_kwargs = {'epochs':400, 'epoch_verbose':10, 'patience':400,}
-    obs, _ = envs.reset(seed=args.seed)
-    obs = fill_rb(rb, envs, obs, n_samples=int(1e4))
-    dpcontrol.train(trainer_kwargs=trainer_kwargs, n_samples=int(1e4), batch_size=args.batch_size)
-    K_learn = mu.K.detach().numpy()
-    print(f"Iter: 'Distance' from optimal gain: {np.linalg.norm(K_opt - K_learn, 'fro')}")
+    trainer_kwargs = {'epochs':1, 'epoch_verbose':1, 'patience':1,}
+    for i in range(10000):
+        obs = fill_rb(rb, envs, obs, n_samples=args.batch_size)
+        with HiddenPrints():
+            dpcontrol.train(trainer_kwargs=trainer_kwargs, n_samples=args.batch_size, batch_size=args.batch_size)
 
-    """ Scheme 2 """
-    # trainer_kwargs = {'epochs':1, 'epoch_verbose':1, 'patience':1,}
-    # for i in range(1000):
-    #     obs = fill_rb(rb, envs, obs, n_samples=args.batch_size)
-    #     dpcontrol.train(trainer_kwargs=trainer_kwargs, n_samples=args.batch_size, batch_size=args.batch_size)
-
-    #     if (i % 100) == 0:
-    #         K_learn = mu.K.detach().numpy()
-    #         print(f"Iter {i}: 'Distance' from optimal gain: {np.linalg.norm(K_opt - K_learn, 'fro')}")
+        if (i % 100) == 0:
+            K_learn = mu.K.detach().numpy()
+            print(f"Iter {i}: 'Distance' from optimal gain: {np.linalg.norm(K_opt - K_learn, 'fro')}")
 
     print(f"K' == K^*:\n{np.isclose(K_opt, K_learn)}")

@@ -1,8 +1,9 @@
 casadi==3.6.7
+casadi==3.6.7
 do_mpc==4.6.5
 gymnasium==0.28.1
 l4casadi==2.0.0
-matplotlib==3.10.1
+matplotlib==3.10.0
 neuromancer==1.5.2
 numpy==1.23.5
 pandas==2.2.3

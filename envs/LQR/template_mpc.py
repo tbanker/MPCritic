@@ -29,11 +29,10 @@ def template_mpc(model, goal = None, mpc_mode = "nominal", n_horizon = 5, silenc
 
     if silence_solver:
         mpc.settings.supress_ipopt_output()
-        # mpc.settings.solver_options['ipopt.print_level'] = 0
-    # see https://coin-or.github.io/Ipopt/OPTIONS.html and https://arxiv.org/pdf/1909.08104
-    mpc.nlpsol_opts = {'ipopt.linear_solver': solver} # pardiso, MA27, MA57, spral, HSL_MA86, mumps (mumps is do-mpc default; they also recommend MA27 for a speedup)
+        
+    mpc.nlpsol_opts = {'ipopt.linear_solver': solver}
 
-    mpc.bounds['lower','_u','u'] = -np.ones(m) # ulim[0]
+    mpc.bounds['lower','_u','u'] = -np.ones(m)
     mpc.bounds['upper','_u','u'] = np.ones(m)
 
     if uncertain_params == "nominal": 
@@ -44,17 +43,13 @@ def template_mpc(model, goal = None, mpc_mode = "nominal", n_horizon = 5, silenc
 
         mpc.set_uncertainty_values(A = [A], B = [B], P = [P])
 
-    # p_template = mpc.get_p_template(n_combinations=1)
-    # for key in mpc_p.keys():
-    #     p_template['_p',:,key] = mpc_p[key]
-
     if mpc_mode == "baseline" or mpc_mode == "nominal":
         mpc.settings.n_horizon = n_horizon
         if mpc_mode == "nominal":
             mpc.settings.n_robust = 0
 
-        mpc.bounds['lower','_x','x'] = -np.ones(n) # xlim[0]
-        mpc.bounds['upper','_x','x'] = np.ones(n) # xlim[1]
+        mpc.bounds['lower','_x','x'] = -np.ones(n)
+        mpc.bounds['upper','_x','x'] = np.ones(n)
 
         lterm = model.aux['stage_cost']
         mterm = model.aux['terminal_cost']
