@@ -1,5 +1,4 @@
 casadi==3.6.7
-casadi==3.6.7
 do_mpc==4.6.5
 gymnasium==0.28.1
 l4casadi==2.0.0
