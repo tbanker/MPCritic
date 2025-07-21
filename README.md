@@ -2,12 +2,14 @@
 
 ```
 pip install -r requirements.txt
+pip install l4casadi --no-build-isolation
 ```
 Requires Python 3.10. Optionally, can install via conda as follows:
 ```
 conda create -n MPCritic python=3.10
 conda activate MPCritic
 pip install -r requirements.txt
+pip install l4casadi --no-build-isolation
 ```
 
 See also [do-mpc](https://www.do-mpc.com/en/latest/installation.html) and [L4CasADi](https://github.com/Tim-Salzmann/l4casadi) for additional functionality and details.
